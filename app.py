@@ -218,6 +218,15 @@ if st.button("🚀 בצע שיבוץ"):
         st.success("✅ השיבוץ הושלם!")
         st.dataframe(df, use_container_width=True)
 
+                # סיכום כמה משמרות קיבל כל עובד
+        st.subheader("📊 סיכום משמרות לכל עובד")
+        worker_counts = df['עובד'].value_counts().reset_index()
+        worker_counts.columns = ['עובד', 'מספר משמרות']
+        st.dataframe(worker_counts, use_container_width=True)
+
+        # גרף עמודות
+        st.bar_chart(worker_counts.set_index('עובד'))
+
         # הורדה ל-CSV
         csv = df.to_csv(index=False).encode('utf-8-sig')
         st.download_button(
@@ -234,3 +243,4 @@ if st.button("🚀 בצע שיבוץ"):
         st.markdown(f"📊 **{high_pref_count} מתוך {total_assigned}** שיבוצים לפי עדיפות 3 — **{percentage:.1f}%**")
     else:
         st.info("לא בוצע אף שיבוץ.")
+
