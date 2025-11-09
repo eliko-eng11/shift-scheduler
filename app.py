@@ -1,246 +1,134 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from io import BytesIO
 
 st.set_page_config(page_title="🗕️ שיבוץ עובדים", layout="wide")
 st.markdown("<h1 style='text-align:center; color:#2C3E50;'>🛠️ מערכת שיבוץ חכמה לעובדים</h1>", unsafe_allow_html=True)
 
 # -----------------------------
-# הקצאה פשוטה במקום scipy
+# פונקציית הקצאה פשוטה (חמדנית)
 # -----------------------------
 def simple_assignment(cost_matrix):
-    """
-    מקבל מטריצת עלויות ומחזיר התאמות (rows, cols) בצורה חמדנית.
-    זה לא ההונגרי המלא – אבל זה מספיק טוב לדמו ולפרויקט.
-    """
-    used_rows = set()
-    used_cols = set()
-    assignments = []
-
-    rows = len(cost_matrix)
-    cols = len(cost_matrix[0]) if rows > 0 else 0
+    used_rows, used_cols, assignments = set(), set(), []
+    rows, cols = len(cost_matrix), len(cost_matrix[0]) if len(cost_matrix) > 0 else 0
 
     for _ in range(min(rows, cols)):
-        best = None
-        best_cost = 10**12
+        best, best_cost = None, 10**9
         for i in range(rows):
-            if i in used_rows:
-                continue
+            if i in used_rows: continue
             for j in range(cols):
-                if j in used_cols:
-                    continue
-                c = cost_matrix[i][j]
-                if c < best_cost:
-                    best_cost = c
-                    best = (i, j)
-        if best is None:
-            break
+                if j in used_cols: continue
+                if cost_matrix[i][j] < best_cost:
+                    best_cost, best = cost_matrix[i][j], (i, j)
+        if best is None: break
         r, c = best
-        assignments.append((r, c))
         used_rows.add(r)
         used_cols.add(c)
-
-    if not assignments:
-        return [], []
-    rr, cc = zip(*assignments)
-    return list(rr), list(cc)
+        assignments.append((r, c))
+    return list(zip(*assignments)) if assignments else ([], [])
 
 # -----------------------------
-# הגדרות בסיס
+# קבועים
 # -----------------------------
 ordered_days = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת']
 full_shifts = ['משמרת בוקר', 'משמרת אחצ', 'משמרת לילה']
-basic_days = ordered_days[:5]
-
-num_workers = st.number_input("כמה עובדים יש?", min_value=1, step=1)
-work_friday = st.checkbox("עובדים ביום שישי?")
-work_saturday = st.checkbox("עובדים ביום שבת?")
-shifts_per_day_basic = st.selectbox("כמה משמרות ביום רגיל (א׳–ה׳)?", [1, 2, 3])
-
-selected_shifts_basic = full_shifts[:shifts_per_day_basic]
-selected_shifts_friday = full_shifts[:st.selectbox("כמה משמרות בשישי?", [0, 1, 2, 3]) if work_friday else 0]
-selected_shifts_saturday = full_shifts[:st.selectbox("כמה משמרות בשבת?", [0, 1, 2, 3]) if work_saturday else 0]
-
-active_days = basic_days + (['שישי'] if work_friday else []) + (['שבת'] if work_saturday else [])
 
 # -----------------------------
-# עובדים
+# טעינת נתונים מאקסל
 # -----------------------------
-st.subheader("👥 שמות העובדים")
-workers = []
-for i in range(num_workers):
-    name = st.text_input(f"שם עובד {i+1}", key=f"worker_{i}")
-    if name:
-        workers.append(name.strip())
+st.subheader("📤 העלאת נתונים מאקסל")
+uploaded_file = st.file_uploader(
+    "העלה קובץ Excel עם גיליונות: workers, requirements, preferences",
+    type=["xlsx", "xls"],
+    help="אם לא תעלה קובץ – תוכל להזין נתונים ידנית (לא מומלץ)."
+)
+
+use_excel, df_workers, df_req, df_pref = False, None, None, None
+
+if uploaded_file is not None:
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        df_workers = pd.read_excel(xls, "workers")
+        df_req = pd.read_excel(xls, "requirements")
+        df_pref = pd.read_excel(xls, "preferences")
+        use_excel = True
+        st.success("✅ הנתונים נטענו בהצלחה מהקובץ!")
+    except Exception as e:
+        st.error(f"שגיאה בקריאת הקובץ: {e}")
 
 # -----------------------------
-# דרישות משמרות
+# אם הועלה קובץ, מייצרים ממנו את כל הנתונים
 # -----------------------------
-st.subheader("📋 כמה עובדים דרושים בכל משמרת")
-required_workers = {}
-shift_slots = []
-for d in active_days:
-    shifts_today = (
-        selected_shifts_basic if d in basic_days
-        else selected_shifts_friday if d == 'שישי'
-        else selected_shifts_saturday
-    )
-    for s in shifts_today:
-        req = st.number_input(f"{d} - {s}", min_value=0, max_value=10, value=1, key=f"{d}_{s}")
-        required_workers[(d, s)] = req
-        for i in range(req):
-            shift_slots.append((d, s, i))
+if use_excel:
+    workers = df_workers["worker"].astype(str).tolist()
+    active_days = df_req["day"].astype(str).unique().tolist()
+    shift_slots = []
+    for _, row in df_req.iterrows():
+        for i in range(int(row["required"])):
+            shift_slots.append((row["day"], row["shift"], i))
 
-# -----------------------------
-# העדפות
-# -----------------------------
-st.subheader("⭐ העדפות עובדים (1=נמוך, 3=גבוה, שלילי=לא זמין, 0=שיבוץ רק אם אין ברירה)")
-preferences = {}
-for w in workers:
-    for d in active_days:
-        shifts_today = (
-            selected_shifts_basic if d in basic_days
-            else selected_shifts_friday if d == 'שישי'
-            else selected_shifts_saturday
-        )
-        for s in shifts_today:
-            val = st.slider(f"{w} - {d} - {s}", -1, 3, 2, key=f"{w}_{d}_{s}")
-            preferences[(w, d, s)] = val
+    preferences = {}
+    for _, row in df_pref.iterrows():
+        preferences[(row["worker"], row["day"], row["shift"])] = int(row["pref"])
 
-# -----------------------------
-# כפתור שיבוץ
-# -----------------------------
-if st.button("🚀 בצע שיבוץ"):
-    # מועמדים חוקיים
-    worker_copies = [
-        (w, d, s)
-        for w in workers
-        for d in active_days
-        for s in (
-            selected_shifts_basic if d in basic_days
-            else selected_shifts_friday if d == 'שישי'
-            else selected_shifts_saturday
-        )
-        if preferences[(w, d, s)] >= 0
-    ]
+    st.dataframe(df_workers, use_container_width=True)
+    st.dataframe(df_req, use_container_width=True)
+    st.dataframe(df_pref, use_container_width=True)
 
-    # בניית מטריצת עלות
-    cost_matrix = []
-    for w, d, s in worker_copies:
-        row = []
-        for sd, ss, _ in shift_slots:
-            if (d, s) == (sd, ss):
-                pref = preferences[(w, d, s)]
-                if pref == 0:
-                    row.append(100)
+    if st.button("🚀 בצע שיבוץ"):
+        # בונים מטריצת עלות
+        worker_copies = [(w, d, s) for (w, d, s), p in preferences.items() if p >= 0]
+        cost_matrix = []
+        for w, d, s in worker_copies:
+            row = []
+            for sd, ss, _ in shift_slots:
+                if (d, s) == (sd, ss):
+                    pref = preferences.get((w, d, s), 0)
+                    row.append(4 - pref if pref > 0 else 100)
                 else:
-                    row.append(4 - pref)
-            else:
-                row.append(1e6)
-        cost_matrix.append(row)
+                    row.append(1e6)
+            cost_matrix.append(row)
+        cost_matrix = np.array(cost_matrix, dtype=float)
 
-    cost_matrix = np.array(cost_matrix, dtype=float)
+        row_ind, col_ind = simple_assignment(cost_matrix)
+        assignments, used_workers, used_slots = [], set(), set()
+        worker_shift_count = {w: 0 for w in workers}
 
-    # במקום scipy:
-    row_ind, col_ind = simple_assignment(cost_matrix)
-
-    assignments = []
-    used_workers_in_shift = set()
-    used_slots = set()
-    worker_shift_count = {w: 0 for w in workers}
-    worker_daily_shifts = {w: {d: [] for d in active_days} for w in workers}
-    max_shifts_per_worker = len(shift_slots) // len(workers) + 1 if workers else 0
-
-    # מעבר על ההתאמות
-    pairs = list(zip(row_ind, col_ind))
-    pairs.sort(key=lambda x: cost_matrix[x[0], x[1]])
-
-    for r, c in pairs:
-        worker, day, shift = worker_copies[r]
-        slot = shift_slots[c]
-        shift_key = (worker, slot[0], slot[1])
-
-        if cost_matrix[r][c] >= 1e6:
-            continue
-        if shift_key in used_workers_in_shift or slot in used_slots:
-            continue
-        if worker_shift_count[worker] >= max_shifts_per_worker:
-            continue
-
-        current_shift_index = full_shifts.index(shift)
-        if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[worker][day]):
-            continue
-
-        used_workers_in_shift.add(shift_key)
-        used_slots.add(slot)
-        assignments.append({'יום': slot[0], 'משמרת': slot[1], 'עובד': worker})
-        worker_shift_count[worker] += 1
-        worker_daily_shifts[worker][day].append(shift)
-
-    # סיבוב שני - להשלים משמרות
-    remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
-    unassigned_pairs = set()
-    for slot in remaining_slots:
-        d, s, _ = slot
-        assigned = False
-        for w in workers:
-            if worker_shift_count[w] >= max_shifts_per_worker:
+        for r, c in zip(row_ind, col_ind):
+            w, d, s = worker_copies[r]
+            slot = shift_slots[c]
+            if cost_matrix[r][c] >= 1e6 or slot in used_slots:
                 continue
-            pref = preferences.get((w, d, s), -1)
-            if pref < 0:
-                continue
-            current_shift_index = full_shifts.index(s)
-            if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[w][d]):
-                continue
-            shift_key = (w, d, s)
-            if shift_key in used_workers_in_shift:
-                continue
-
-            used_workers_in_shift.add(shift_key)
+            assignments.append({"יום": slot[0], "משמרת": slot[1], "עובד": w})
             used_slots.add(slot)
-            assignments.append({'יום': d, 'משמרת': s, 'עובד': w})
+            used_workers.add(w)
             worker_shift_count[w] += 1
-            worker_daily_shifts[w][d].append(s)
-            assigned = True
-            break
-        if not assigned:
-            unassigned_pairs.add((d, s))
 
-    for d, s in unassigned_pairs:
-        st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
+        df = pd.DataFrame(assignments)
+        if not df.empty:
+            st.success("✅ השיבוץ הושלם!")
+            st.dataframe(df, use_container_width=True)
 
-    df = pd.DataFrame(assignments)
-    if not df.empty:
-        df['יום_מספר'] = df['יום'].apply(lambda x: ordered_days.index(x))
-        df = df.sort_values(by=['יום_מספר', 'משמרת', 'עובד'])
-        df = df[['יום', 'משמרת', 'עובד']]
+            # שמירת תוצאה לגיליון schedule
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                df_workers.to_excel(writer, sheet_name="workers", index=False)
+                df_req.to_excel(writer, sheet_name="requirements", index=False)
+                df_pref.to_excel(writer, sheet_name="preferences", index=False)
+                df.to_excel(writer, sheet_name="schedule", index=False)
+            output.seek(0)
 
-        st.success("✅ השיבוץ הושלם!")
-        st.dataframe(df, use_container_width=True)
+            st.download_button(
+                label="⬇️ הורד קובץ אקסל עם השיבוץ (כולל גיליון schedule)",
+                data=output,
+                file_name="shifts_with_schedule.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-                # סיכום כמה משמרות קיבל כל עובד
-        st.subheader("📊 סיכום משמרות לכל עובד")
-        worker_counts = df['עובד'].value_counts().reset_index()
-        worker_counts.columns = ['עובד', 'מספר משמרות']
-        st.dataframe(worker_counts, use_container_width=True)
+            # מדד איכות
+            high_pref_count = sum(preferences.get((a["עובד"], a["יום"], a["משמרת"]), 0) == 3 for a in assignments)
+            st.markdown(f"📊 **{high_pref_count} שיבוצים עם עדיפות 3 מתוך {len(assignments)}**")
 
-        # גרף עמודות
-        st.bar_chart(worker_counts.set_index('עובד'))
-
-        # הורדה ל-CSV
-        csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="⬇️ הורד את השיבוץ כ-CSV",
-            data=csv,
-            file_name="shibutz.csv",
-            mime="text/csv",
-        )
-
-        # מדד איכות
-        high_pref_count = sum(preferences.get((a['עובד'], a['יום'], a['משמרת']), 0) == 3 for a in assignments)
-        total_assigned = len(assignments)
-        percentage = (high_pref_count / total_assigned) * 100 if total_assigned > 0 else 0
-        st.markdown(f"📊 **{high_pref_count} מתוך {total_assigned}** שיבוצים לפי עדיפות 3 — **{percentage:.1f}%**")
-    else:
-        st.info("לא בוצע אף שיבוץ.")
-
+else:
+    st.info("📎 העלה קובץ אקסל כדי לבצע שיבוץ אוטומטי (ריק יוצר בעיות 😉)")
