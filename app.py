@@ -5,7 +5,7 @@ from io import BytesIO
 
 
 # -----------------------------
-# פונקציית הקצאה חמדנית (במקום scipy)
+# פונקציית הקצאה חמדנית (כבר לא בשימוש כרגע, אבל נשאיר למקרה שתרצה)
 # -----------------------------
 def simple_assignment(cost_matrix):
     """
@@ -104,7 +104,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     if not shift_slots:
         raise ValueError("לא נמצאו דרישות משמרות בגיליון 'requirements'")
 
-    # רשימת ימים וערכי משמרות (לסידור)
+    # רשימת ימים וסוגי משמרות (לסידור)
     ordered_days = list(dict.fromkeys([d for d, _, _ in shift_slots]))
     full_shifts = list(dict.fromkeys([s for _, s, _ in shift_slots]))
 
@@ -120,125 +120,114 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
             continue
         pref_dict[(w, d, s)] = p
 
-    # יצירת worker_copies – רק צירופים שהעדפה שלהם >= 0
-    worker_copies = []
-    for w in workers:
-        for (d, s) in day_shift_pairs:
-            p = pref_dict.get((w, d, s), -1)
-            if p >= 0:
-                worker_copies.append((w, d, s))
-
-    if not worker_copies:
-        raise ValueError("לא נמצאו העדפות חוקיות (>=0) בגיליון 'preferences'")
-
-    # מטריצת עלויות
-    cost_matrix = []
-    for w, d, s in worker_copies:
-        row_costs = []
-        for sd, ss, _ in shift_slots:
-            if (d, s) == (sd, ss):
-                pref = pref_dict.get((w, d, s), 0)
-                if pref == 0:
-                    # אפשרי אך לא מומלץ
-                    row_costs.append(100)
-                else:
-                    # עדיפות גבוהה = עלות נמוכה
-                    row_costs.append(4 - pref)
-            else:
-                row_costs.append(1e6)
-        cost_matrix.append(row_costs)
-
-    cost_matrix = np.array(cost_matrix, dtype=float)
-
-    # הקצאה חמדנית
-    row_ind, col_ind = simple_assignment(cost_matrix)
-
+    # מבני נתונים לניהול השיבוץ
     assignments = []
-    used_workers_in_shift = set()
-    used_slots = set()
     worker_shift_count = {w: 0 for w in workers}
     worker_daily_shifts = {w: {d: [] for d in ordered_days} for w in workers}
-    max_shifts_per_worker = len(shift_slots) // len(workers) + 1
-
-    # סידור לפי עלות
-    pairs = list(zip(row_ind, col_ind))
-    pairs.sort(key=lambda x: cost_matrix[x[0], x[1]])
-
-    # סיבוב ראשון - הקצאה לפי עלויות
-    for r, c in pairs:
-        worker, day, shift = worker_copies[r]
-        slot = shift_slots[c]
-        shift_key = (worker, slot[0], slot[1])
-
-        if cost_matrix[r][c] >= 1e6:
-            continue
-        if shift_key in used_workers_in_shift or slot in used_slots:
-            continue
-        if worker_shift_count[worker] >= max_shifts_per_worker:
-            continue
-
-        # בדיקת משמרות צמודות באותו יום
-        try:
-            current_shift_index = full_shifts.index(shift)
-        except ValueError:
-            current_shift_index = 0
-
-        if any(
-            abs(full_shifts.index(x) - current_shift_index) == 1
-            for x in worker_daily_shifts[worker][day]
-        ):
-            continue
-
-        used_workers_in_shift.add(shift_key)
-        used_slots.add(slot)
-        assignments.append(
-            {"שבוע": week_number, "יום": slot[0], "משמרת": slot[1], "עובד": worker}
-        )
-        worker_shift_count[worker] += 1
-        worker_daily_shifts[worker][day].append(shift)
-
-    # סיבוב שני – השלמת משמרות שלא שובצו, כולל עדיפות 0
-    remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
     unassigned_pairs = set()
 
-    for slot in remaining_slots:
+    # כמה שיבוצים מקסימום לעובד (אותו רעיון כמו קודם – חלוקה הוגנת)
+    max_shifts_per_worker = len(shift_slots) // len(workers) + 1 if workers else 0
+
+    # ⬇️ הכנה: לכל סלוט – מי בכלל יכול לעבוד שם (בלי קשר למגבלות הוגנות)
+    base_slot_candidates = {}
+    for slot in shift_slots:
         d, s, _ = slot
-        assigned = False
+        cands = []
         for w in workers:
-            if worker_shift_count[w] >= max_shifts_per_worker:
-                continue
             pref = pref_dict.get((w, d, s), -1)
-            if pref < 0:
-                continue
+            if pref >= 0:  # שלילי = לא זמין בכלל
+                cands.append(w)
+        base_slot_candidates[slot] = cands
 
-            try:
-                current_shift_index = full_shifts.index(s)
-            except ValueError:
-                current_shift_index = 0
+    # נסדר את הסלוטים לפי:
+    # 1. כמה מועמדים יש להם (כמה שפחות -> קודם)
+    # 2. יום בשבוע (כדי שיהיה יציב)
+    # 3. סוג משמרת (סדר המשמרות)
+    def slot_sort_key(slot):
+        d, s, _ = slot
+        return (
+            len(base_slot_candidates.get(slot, [])),
+            ordered_days.index(d),
+            full_shifts.index(s) if s in full_shifts else 0,
+        )
 
-            if any(
-                abs(full_shifts.index(x) - current_shift_index) == 1
-                for x in worker_daily_shifts[w][d]
-            ):
-                continue
+    ordered_slots = sorted(shift_slots, key=slot_sort_key)
 
-            shift_key = (w, d, s)
-            if shift_key in used_workers_in_shift:
-                continue
+    # עכשיו נעבור סלוט סלוט, כדי למלא קודם את המשמרות ה"בעייתיות"
+    for slot in ordered_slots:
+        d, s, _ = slot
+        possible_workers = base_slot_candidates.get(slot, [])
 
-            used_workers_in_shift.add(shift_key)
-            used_slots.add(slot)
-            assignments.append(
-                {"שבוע": week_number, "יום": d, "משמרת": s, "עובד": w}
-            )
-            worker_shift_count[w] += 1
-            worker_daily_shifts[w][d].append(s)
-            assigned = True
-            break
-
-        if not assigned:
+        if not possible_workers:
+            # אף אחד לא זמין למשמרת הזו
             unassigned_pairs.add((d, s))
+            continue
 
+        chosen_worker = None
+
+        # ננסה בשלוש רמות הקשחה:
+        # רמה 1: לכבד הכל – לא לעבור מקסימום, לא צמודות, עדיפות גבוהה
+        # רמה 2: מרפים את כלל הצמודות (עדיין מכבדים מקסימום)
+        # רמה 3: מרפים גם את המקסימום כדי לא להשאיר חורים
+        for relax_level in [1, 2, 3]:
+            best_w = None
+            best_pref = -999
+            best_shifts_so_far = 10**9
+
+            for w in possible_workers:
+                pref = pref_dict.get((w, d, s), -1)
+                if pref < 0:
+                    continue
+
+                # רמת הקשחה 1: לכבד מקסימום + לא צמודות
+                if relax_level <= 2:
+                    if worker_shift_count[w] >= max_shifts_per_worker:
+                        continue
+
+                # בדיקת צמודות רק ברמות 1
+                if relax_level == 1:
+                    try:
+                        current_shift_index = full_shifts.index(s)
+                    except ValueError:
+                        current_shift_index = 0
+
+                    if any(
+                        abs(full_shifts.index(x) - current_shift_index) == 1
+                        for x in worker_daily_shifts[w][d]
+                    ):
+                        continue
+
+                # ברמה 3 – לא בודקים כלום חוץ מזמינות
+                # בחירה מבוססת עדיפות, ואם יש תיקו – מי שעבד פחות
+                shifts_so_far = worker_shift_count[w]
+                if pref > best_pref or (pref == best_pref and shifts_so_far < best_shifts_so_far):
+                    best_pref = pref
+                    best_w = w
+                    best_shifts_so_far = shifts_so_far
+
+            if best_w is not None:
+                chosen_worker = best_w
+                break  # יציאה מה-relax_level loop
+
+        if chosen_worker is None:
+            # לא הצלחנו לשבץ אף אחד גם אחרי ריכוך
+            unassigned_pairs.add((d, s))
+            continue
+
+        # מוסיפים את השיבוץ
+        assignments.append(
+            {
+                "שבוע": week_number,
+                "יום": d,
+                "משמרת": s,
+                "עובד": chosen_worker,
+            }
+        )
+        worker_shift_count[chosen_worker] += 1
+        worker_daily_shifts[chosen_worker][d].append(s)
+
+    # יצירת DataFrame
     df = pd.DataFrame(assignments)
 
     if df.empty:
@@ -284,7 +273,7 @@ if st.button("🚀 בצע שיבוץ והוסף גיליון חדש לקובץ")
 
         # הצגת אזהרות על משמרות שלא שובצו
         if unassigned_pairs:
-            for d, s in unassigned_pairs:
+            for d, s in sorted(unassigned_pairs):
                 st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
 
         # -----------------------------
