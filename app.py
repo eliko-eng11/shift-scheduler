@@ -6,9 +6,17 @@ import sqlite3
 import hashlib
 import os
 import hmac
-import streamlit as st
 
+# =============================
+# 1) חובה: page_config ראשון!
+# =============================
+st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", layout="wide")
+
+# =============================
+# 2) AUTH (SQLite) - Login/Register
+# =============================
 DB_PATH = "users.db"
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -24,10 +32,16 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def hash_password(password: str, salt: str) -> str:
-    # PBKDF2-HMAC-SHA256
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        120_000
+    )
     return dk.hex()
+
 
 def create_user(username: str, password: str) -> bool:
     username = username.strip()
@@ -40,25 +54,32 @@ def create_user(username: str, password: str) -> bool:
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)", (username, p_hash, salt))
+        cur.execute(
+            "INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)",
+            (username, p_hash, salt)
+        )
         conn.commit()
         conn.close()
         return True
     except sqlite3.IntegrityError:
-        # username already exists
         return False
 
+
 def verify_user(username: str, password: str) -> bool:
+    username = username.strip()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username.strip(),))
+    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
     row = cur.fetchone()
     conn.close()
+
     if not row:
         return False
+
     stored_hash, salt = row
     check_hash = hash_password(password, salt)
     return hmac.compare_digest(stored_hash, check_hash)
+
 
 def auth_gate():
     init_db()
@@ -67,7 +88,7 @@ def auth_gate():
         st.session_state.logged_in = False
         st.session_state.username = ""
 
-    # אם מחובר - מציג התנתקות וממשיך לאפליקציה
+    # אם מחובר - ממשיכים לאפליקציה
     if st.session_state.logged_in:
         st.sidebar.success(f"מחובר כ: {st.session_state.username}")
         if st.sidebar.button("התנתקות"):
@@ -76,7 +97,7 @@ def auth_gate():
             st.rerun()
         return
 
-    # אם לא מחובר - מציג Login/Register ועוצר פה
+    # אם לא מחובר - מציג Login/Register ועוצר כאן
     st.title("🔐 התחברות למערכת השיבוץ")
     tab_login, tab_register = st.tabs(["התחברות", "רישום"])
 
@@ -110,15 +131,13 @@ def auth_gate():
     st.stop()
 
 
+# קודם כל אימות!
+auth_gate()
 
-# -----------------------------
-# פונקציית הקצאה חמדנית (במקום scipy)
-# -----------------------------
+# =============================
+# 3) אלגוריתם השיבוץ שלך
+# =============================
 def simple_assignment(cost_matrix):
-    """
-    מקבל מטריצת עלויות ומחזיר התאמות (rows, cols) בצורה חמדנית.
-    זה לא האלגוריתם ההונגרי המלא, אבל עובד טוב לדמו וליישום שלך.
-    """
     used_rows = set()
     used_cols = set()
     assignments = []
@@ -152,21 +171,15 @@ def simple_assignment(cost_matrix):
     return list(rr), list(cc)
 
 
-# -----------------------------
-# בניית שיבוץ מתוך שלושת הגיליונות
-# -----------------------------
 def build_schedule(workers_df, req_df, pref_df, week_number):
-    # ניקוי שמות עמודות
     workers_df.columns = workers_df.columns.str.strip()
     req_df.columns = req_df.columns.str.strip()
     pref_df.columns = pref_df.columns.str.strip()
 
-    # התאמת שמות עמודות בעברית לאנגלית פנימית
     workers_df = workers_df.rename(columns={"שם עובד": "worker"})
     req_df = req_df.rename(columns={"יום": "day", "משמרת": "shift", "כמות נדרשת": "required"})
     pref_df = pref_df.rename(columns={"עדיפות": "preference", "עובד": "worker", "יום": "day", "משמרת": "shift"})
 
-    # ניקוי רווחים מיותרים בשדות הטקסט
     if "worker" in workers_df.columns:
         workers_df["worker"] = workers_df["worker"].astype(str).str.strip()
 
@@ -178,18 +191,10 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         if "worker" in df.columns:
             df["worker"] = df["worker"].astype(str).str.strip()
 
-    # רשימת עובדים
-    workers = (
-        workers_df["worker"]
-        .dropna()
-        .astype(str)
-        .tolist()
-    )
-
+    workers = workers_df["worker"].dropna().astype(str).tolist()
     if not workers:
         raise ValueError("לא נמצאו עובדים בגיליון 'workers'")
 
-    # סלוטים של משמרות לפי הדרישות
     req_df["required"] = req_df["required"].fillna(0).astype(int)
     shift_slots = []
     day_shift_pairs = []
@@ -198,7 +203,6 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         day = str(row["day"])
         shift = str(row["shift"])
         req = int(row["required"])
-
         if req <= 0:
             continue
 
@@ -212,11 +216,9 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     if not shift_slots:
         raise ValueError("לא נמצאו דרישות משמרות בגיליון 'requirements'")
 
-    # רשימת ימים ומשמרות לסידור
     ordered_days = list(dict.fromkeys([d for d, _, _ in shift_slots]))
     full_shifts = list(dict.fromkeys([s for _, s, _ in shift_slots]))
 
-    # העדפות למילון
     pref_dict = {}
     for _, row in pref_df.iterrows():
         w = str(row["worker"])
@@ -228,7 +230,6 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
             continue
         pref_dict[(w, d, s)] = p
 
-    # worker_copies – רק צירופים שהעדפה שלהם >= 0
     worker_copies = []
     for w in workers:
         for (d, s) in day_shift_pairs:
@@ -239,48 +240,37 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     if not worker_copies:
         raise ValueError("לא נמצאו העדיפויות החוקיות (>=0) בגיליון 'preferences'")
 
-    # מטריצת עלויות
     cost_matrix = []
     for w, d, s in worker_copies:
         row_costs = []
         for sd, ss, _ in shift_slots:
             if (d, s) == (sd, ss):
                 pref = pref_dict.get((w, d, s), 0)
-                if pref == 0:
-                    # אפשרי אך לא מומלץ
-                    row_costs.append(100)
-                else:
-                    # עדיפות גבוהה = עלות נמוכה
-                    row_costs.append(4 - pref)
+                row_costs.append(100 if pref == 0 else 4 - pref)
             else:
                 row_costs.append(1e6)
         cost_matrix.append(row_costs)
 
     cost_matrix = np.array(cost_matrix, dtype=float)
 
-    # הקצאה חמדנית
     row_ind, col_ind = simple_assignment(cost_matrix)
 
     assignments = []
-    used_workers_in_shift = set()          # (worker, day, shift)
-    used_slots = set()                     # מלאו סלוט מסוים (day, shift, i)
+    used_slots = set()
     worker_shift_count = {w: 0 for w in workers}
     worker_daily_shifts = {w: {d: [] for d in ordered_days} for w in workers}
-    worker_day_shift_assigned = set()      # מניעת כפילויות עובד-יום-משמרת
+    worker_day_shift_assigned = set()
 
     max_shifts_per_worker = len(shift_slots) // len(workers) + 1
 
-    # סידור לפי עלות
     pairs = list(zip(row_ind, col_ind))
     pairs.sort(key=lambda x: cost_matrix[x[0], x[1]])
 
-    # סיבוב ראשון – הקצאה לפי עלויות (עדיין שומרים על הוגנות)
     for r, c in pairs:
         worker, day, shift = worker_copies[r]
-        slot = shift_slots[c]  # (day, shift, i)
-        slot_day, slot_shift, _ = slot
+        slot_day, slot_shift, slot_i = shift_slots[c]
+        slot = (slot_day, slot_shift, slot_i)
 
-        # מפתח ייחודי למניעת כפילות עובד-יום-משמרת
         wds_key = (worker, slot_day, slot_shift)
 
         if cost_matrix[r][c] >= 1e6:
@@ -292,80 +282,65 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         if worker_shift_count[worker] >= max_shifts_per_worker:
             continue
 
-        # בדיקת משמרות צמודות באותו יום
         try:
-            current_shift_index = full_shifts.index(shift)
+            current_shift_index = full_shifts.index(slot_shift)
         except ValueError:
             current_shift_index = 0
 
         if any(
             abs(full_shifts.index(x) - current_shift_index) == 1
-            for x in worker_daily_shifts[worker][day]
+            for x in worker_daily_shifts[worker][slot_day]
         ):
             continue
 
         used_slots.add(slot)
-        used_workers_in_shift.add(wds_key)
         worker_day_shift_assigned.add(wds_key)
 
-        assignments.append(
-            {"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": worker}
-        )
+        assignments.append({"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": worker})
         worker_shift_count[worker] += 1
-        worker_daily_shifts[worker][day].append(shift)
+        worker_daily_shifts[worker][slot_day].append(slot_shift)
 
-    # סיבוב שני – השלמת משמרות שלא שובצו
-    # כאן אנו פחות מחמירים עם מגבלת מספר המשמרות לעובד,
-    # כדי לוודא שלא נשארות משמרות ריקות.
-    remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
+    remaining_slots = [slot for slot in shift_slots if (slot[0], slot[1], slot[2]) not in used_slots]
     unassigned_pairs = set()
 
-    for slot in remaining_slots:
-        d, s, _ = slot
+    for slot_day, slot_shift, slot_i in remaining_slots:
         assigned = False
         for w in workers:
-            # לא בודקים כאן את worker_shift_count[w] מול max_shifts_per_worker
-            # כי המטרה היא קודם למלא חורים.
-            pref = pref_dict.get((w, d, s), -1)
+            pref = pref_dict.get((w, slot_day, slot_shift), -1)
             if pref < 0:
                 continue
 
             try:
-                current_shift_index = full_shifts.index(s)
+                current_shift_index = full_shifts.index(slot_shift)
             except ValueError:
                 current_shift_index = 0
 
             if any(
                 abs(full_shifts.index(x) - current_shift_index) == 1
-                for x in worker_daily_shifts[w][d]
+                for x in worker_daily_shifts[w][slot_day]
             ):
                 continue
 
-            wds_key = (w, d, s)
+            wds_key = (w, slot_day, slot_shift)
             if wds_key in worker_day_shift_assigned:
                 continue
 
-            used_slots.add(slot)
-            used_workers_in_shift.add(wds_key)
+            used_slots.add((slot_day, slot_shift, slot_i))
             worker_day_shift_assigned.add(wds_key)
 
-            assignments.append(
-                {"שבוע": week_number, "יום": d, "משמרת": s, "עובד": w}
-            )
+            assignments.append({"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": w})
             worker_shift_count[w] += 1
-            worker_daily_shifts[w][d].append(s)
+            worker_daily_shifts[w][slot_day].append(slot_shift)
             assigned = True
             break
 
         if not assigned:
-            unassigned_pairs.add((d, s))
+            unassigned_pairs.add((slot_day, slot_shift))
 
     df = pd.DataFrame(assignments)
-
     if df.empty:
         raise ValueError("לא נוצר אף שיבוץ. בדוק את הנתונים בגיליונות.")
 
-    # סידור לפי ימים, משמרת, עובד
     df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
@@ -373,13 +348,9 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     return df, unassigned_pairs
 
 
-# -----------------------------
-# אפליקציית Streamlit
-# -----------------------------
-st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", layout="wide")
-st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", layout="wide")
-auth_gate()  # 👈 זה נועל את האפליקציה עד התחברות
-
+# =============================
+# 4) UI של האפליקציה אחרי התחברות
+# =============================
 st.title("🛠️ מערכת שיבוץ משמרות מעולה")
 
 uploaded_file = st.file_uploader("העלה קובץ אקסל קיים", type=["xlsx"])
@@ -397,11 +368,8 @@ if st.button("🚀 בצע שיבוץ והוסף גיליון חדש לקובץ")
         req_df = pd.read_excel(xls, sheet_name="requirements")
         pref_df = pd.read_excel(xls, sheet_name="preferences")
 
-        schedule_df, unassigned_pairs = build_schedule(
-            workers_df, req_df, pref_df, week_number
-        )
+        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
 
-        # איפוס אינדקס כדי שהעמודה הראשונה לא תהיה 9,0,1...
         schedule_df = schedule_df.reset_index(drop=True)
         schedule_df.index += 1
 
@@ -412,14 +380,11 @@ if st.button("🚀 בצע שיבוץ והוסף גיליון חדש לקובץ")
             for d, s in unassigned_pairs:
                 st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
 
-        # כתיבת הקובץ המעודכן לבאפר
         new_sheet_name = f"שבוע {int(week_number)}"
         original_sheet_names = xls.sheet_names
 
         if new_sheet_name in original_sheet_names:
-            st.warning(
-                f"קיים כבר גיליון בשם '{new_sheet_name}'. הגיליון החדש ייקרא '{new_sheet_name} (2)'."
-            )
+            st.warning(f"קיים כבר גיליון בשם '{new_sheet_name}'. הגיליון החדש ייקרא '{new_sheet_name} (2)'.")
             new_sheet_name = f"{new_sheet_name} (2)"
 
         output = BytesIO()
@@ -441,4 +406,3 @@ if st.button("🚀 בצע שיבוץ והוסף גיליון חדש לקובץ")
 
     except Exception as e:
         st.error(f"שגיאה במהלך השיבוץ: {e}")
-
