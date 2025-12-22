@@ -2,6 +2,113 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+import sqlite3
+import hashlib
+import os
+import hmac
+import streamlit as st
+
+DB_PATH = "users.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def hash_password(password: str, salt: str) -> str:
+    # PBKDF2-HMAC-SHA256
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return dk.hex()
+
+def create_user(username: str, password: str) -> bool:
+    username = username.strip()
+    if not username or not password:
+        return False
+
+    salt = os.urandom(16).hex()
+    p_hash = hash_password(password, salt)
+
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)", (username, p_hash, salt))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        # username already exists
+        return False
+
+def verify_user(username: str, password: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username.strip(),))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return False
+    stored_hash, salt = row
+    check_hash = hash_password(password, salt)
+    return hmac.compare_digest(stored_hash, check_hash)
+
+def auth_gate():
+    init_db()
+
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+
+    # אם מחובר - מציג התנתקות וממשיך לאפליקציה
+    if st.session_state.logged_in:
+        st.sidebar.success(f"מחובר כ: {st.session_state.username}")
+        if st.sidebar.button("התנתקות"):
+            st.session_state.logged_in = False
+            st.session_state.username = ""
+            st.rerun()
+        return
+
+    # אם לא מחובר - מציג Login/Register ועוצר פה
+    st.title("🔐 התחברות למערכת השיבוץ")
+    tab_login, tab_register = st.tabs(["התחברות", "רישום"])
+
+    with tab_login:
+        u = st.text_input("שם משתמש", key="login_user")
+        p = st.text_input("סיסמה", type="password", key="login_pass")
+        if st.button("התחבר"):
+            if verify_user(u, p):
+                st.session_state.logged_in = True
+                st.session_state.username = u.strip()
+                st.rerun()
+            else:
+                st.error("שם משתמש או סיסמה לא נכונים")
+
+    with tab_register:
+        new_u = st.text_input("שם משתמש חדש", key="reg_user")
+        new_p = st.text_input("סיסמה חדשה", type="password", key="reg_pass")
+        new_p2 = st.text_input("אימות סיסמה", type="password", key="reg_pass2")
+        if st.button("צור משתמש"):
+            if new_p != new_p2:
+                st.error("הסיסמאות לא תואמות")
+            elif len(new_p) < 4:
+                st.error("סיסמה קצרה מדי (מינימום 4 תווים)")
+            else:
+                ok = create_user(new_u, new_p)
+                if ok:
+                    st.success("נרשמת בהצלחה! עכשיו תתחבר בלשונית התחברות.")
+                else:
+                    st.error("שם המשתמש תפוס או נתונים לא תקינים")
+
+    st.stop()
+
 
 
 # -----------------------------
@@ -270,6 +377,9 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
 # אפליקציית Streamlit
 # -----------------------------
 st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", layout="wide")
+st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", layout="wide")
+auth_gate()  # 👈 זה נועל את האפליקציה עד התחברות
+
 st.title("🛠️ מערכת שיבוץ משמרות מעולה")
 
 uploaded_file = st.file_uploader("העלה קובץ אקסל קיים", type=["xlsx"])
@@ -331,3 +441,4 @@ if st.button("🚀 בצע שיבוץ והוסף גיליון חדש לקובץ")
 
     except Exception as e:
         st.error(f"שגיאה במהלך השיבוץ: {e}")
+
