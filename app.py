@@ -1,12 +1,15 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import gspread
-from google.oauth2.service_account import Credentials
+from io import BytesIO
+
 import sqlite3
 import hashlib
 import os
 import hmac
+
+import gspread
+from google.oauth2.service_account import Credentials
 
 # =============================
 # 1) חובה: page_config ראשון!
@@ -33,19 +36,29 @@ def init_db():
     conn.close()
 
 def hash_password(password: str, salt: str) -> str:
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        120_000
+    )
     return dk.hex()
 
 def create_user(username: str, password: str) -> bool:
     username = username.strip()
     if not username or not password:
         return False
+
     salt = os.urandom(16).hex()
     p_hash = hash_password(password, salt)
+
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute("INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)", (username, p_hash, salt))
+        cur.execute(
+            "INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)",
+            (username, p_hash, salt)
+        )
         conn.commit()
         conn.close()
         return True
@@ -59,14 +72,17 @@ def verify_user(username: str, password: str) -> bool:
     cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
     row = cur.fetchone()
     conn.close()
+
     if not row:
         return False
+
     stored_hash, salt = row
     check_hash = hash_password(password, salt)
     return hmac.compare_digest(stored_hash, check_hash)
 
 def auth_gate():
     init_db()
+
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.username = ""
@@ -111,57 +127,17 @@ def auth_gate():
 
     st.stop()
 
-# קודם כל אימות!
+# חייב קודם אימות
 auth_gate()
 
 # =============================
-# 3) Google Sheets helpers
-# =============================
-SCOPE = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-def get_gspread_client():
-    # לוקחים עותק של ה-secrets
-    creds_info = dict(st.secrets["gcp_service_account"])
-
-    # 🔑 תיקון קריטי: אם המפתח נשמר עם "\n" – נהפוך לשורות אמיתיות
-    creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-
-    creds = Credentials.from_service_account_info(
-        creds_info,
-        scopes=SCOPE
-    )
-    return gspread.authorize(creds)
-
-
-def read_sheet_as_df(sh, worksheet_name: str) -> pd.DataFrame:
-    ws = sh.worksheet(worksheet_name)
-    values = ws.get_all_values()
-    if not values:
-        return pd.DataFrame()
-    headers = values[0]
-    rows = values[1:]
-    return pd.DataFrame(rows, columns=headers)
-
-def write_df_to_worksheet(sh, worksheet_name: str, df: pd.DataFrame):
-    try:
-        ws = sh.worksheet(worksheet_name)
-        ws.clear()
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=30)
-
-    data = [df.columns.tolist()] + df.astype(str).values.tolist()
-    ws.update("A1", data)
-
-# =============================
-# 4) האלגוריתם שלך (לא נוגע)
+# 3) אלגוריתם השיבוץ
 # =============================
 def simple_assignment(cost_matrix):
     used_rows = set()
     used_cols = set()
     assignments = []
+
     rows = len(cost_matrix)
     cols = len(cost_matrix[0]) if rows > 0 else 0
 
@@ -285,6 +261,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     pairs = list(zip(row_ind, col_ind))
     pairs.sort(key=lambda x: cost_matrix[x[0], x[1]])
 
+    # סיבוב ראשון
     for r, c in pairs:
         worker, day, shift = worker_copies[r]
         slot_day, slot_shift, slot_i = shift_slots[c]
@@ -316,7 +293,8 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         worker_shift_count[worker] += 1
         worker_daily_shifts[worker][slot_day].append(slot_shift)
 
-    remaining_slots = [slot for slot in shift_slots if (slot[0], slot[1], slot[2]) not in used_slots]
+    # סיבוב שני - השלמה
+    remaining_slots = [s for s in shift_slots if (s[0], s[1], s[2]) not in used_slots]
     unassigned_pairs = set()
 
     for slot_day, slot_shift, slot_i in remaining_slots:
@@ -357,48 +335,133 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
+
     return df, unassigned_pairs
 
 # =============================
-# 5) UI - Google Sheets only
+# 4) Google Sheets helpers
 # =============================
-st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
+def get_gspread_client(creds_json_path: str):
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_file(creds_json_path, scopes=scopes)
+    return gspread.authorize(creds)
 
-sheet_url = st.text_input("הדבק קישור ל-Google Sheet (עם workers/requirements/preferences)")
+def gs_read_sheet_as_df(sh, worksheet_name: str) -> pd.DataFrame:
+    ws = sh.worksheet(worksheet_name)
+    values = ws.get_all_values()
+    if not values:
+        return pd.DataFrame()
+    header = values[0]
+    rows = values[1:]
+    return pd.DataFrame(rows, columns=header)
+
+def gs_write_df_to_new_worksheet(sh, df: pd.DataFrame, title: str):
+    # אם כבר קיים שם - מוסיפים (2)
+    existing_titles = [w.title for w in sh.worksheets()]
+    final_title = title
+    if final_title in existing_titles:
+        i = 2
+        while f"{title} ({i})" in existing_titles:
+            i += 1
+        final_title = f"{title} ({i})"
+
+    ws = sh.add_worksheet(title=final_title, rows=str(len(df) + 5), cols=str(len(df.columns) + 5))
+
+    # כתיבה: כותרות + נתונים
+    data = [df.columns.tolist()] + df.astype(str).values.tolist()
+    ws.update("A1", data)
+    return final_title
+
+# =============================
+# 5) UI
+# =============================
+st.title("🛠️ מערכת שיבוץ משמרות מעולה")
+
+mode = st.radio("איך לעבוד?", ["Excel (העלאה/הורדה)", "Google Sheets (קריאה/כתיבה)"], horizontal=True)
 week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
 
-if not sheet_url:
-    st.info("הדבק קישור ל-Google Sheet כדי להתחיל.")
-    st.stop()
+if mode == "Excel (העלאה/הורדה)":
+    uploaded_file = st.file_uploader("העלה קובץ אקסל קיים", type=["xlsx"])
 
-if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
-    try:
-        gc = get_gspread_client()
-        sh = gc.open_by_url(sheet_url)
+    if uploaded_file is None:
+        st.info("העלה קובץ אקסל עם הגיליונות workers, requirements, preferences כדי להתחיל.")
+        st.stop()
 
-        workers_df = read_sheet_as_df(sh, "workers")
-        req_df     = read_sheet_as_df(sh, "requirements")
-        pref_df    = read_sheet_as_df(sh, "preferences")
+    if st.button("🚀 בצע שיבוץ והורד קובץ מעודכן"):
+        try:
+            xls = pd.ExcelFile(uploaded_file)
+            workers_df = pd.read_excel(xls, sheet_name="workers")
+            req_df = pd.read_excel(xls, sheet_name="requirements")
+            pref_df = pd.read_excel(xls, sheet_name="preferences")
 
-        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
+            schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, int(week_number))
+            schedule_df = schedule_df.reset_index(drop=True)
+            schedule_df.index += 1
 
-        schedule_df = schedule_df.reset_index(drop=True)
+            st.success("✅ השיבוץ הוכן בהצלחה!")
+            st.dataframe(schedule_df, use_container_width=True)
 
-        st.success("✅ השיבוץ הוכן בהצלחה!")
-        st.dataframe(schedule_df, use_container_width=True)
+            if unassigned_pairs:
+                for d, s in unassigned_pairs:
+                    st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
 
-        if unassigned_pairs:
-            for d, s in unassigned_pairs:
-                st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
+            new_sheet_name = f"שבוע {int(week_number)}"
+            original_sheet_names = xls.sheet_names
 
-        new_sheet_name = f"שבוע {int(week_number)}"
-        existing = [ws.title for ws in sh.worksheets()]
-        if new_sheet_name in existing:
-            new_sheet_name = f"{new_sheet_name} (2)"
+            if new_sheet_name in original_sheet_names:
+                new_sheet_name = f"{new_sheet_name} (2)"
 
-        write_df_to_worksheet(sh, new_sheet_name, schedule_df)
-        st.success(f"✅ נכתב חזרה ל-Google Sheet בגיליון: {new_sheet_name}")
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                for sheet in original_sheet_names:
+                    df_old = pd.read_excel(xls, sheet_name=sheet)
+                    df_old.to_excel(writer, sheet_name=sheet, index=False)
+                schedule_df.to_excel(writer, sheet_name=new_sheet_name, index=False)
 
-    except Exception as e:
-        st.error(f"שגיאה: {e}")
+            output.seek(0)
 
+            st.download_button(
+                label="⬇️ הורד את הקובץ המעודכן",
+                data=output,
+                file_name=uploaded_file.name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+        except Exception as e:
+            st.error(f"שגיאה במהלך השיבוץ: {e}")
+
+else:
+    st.subheader("Google Sheets")
+    st.caption("צריך service account + לשתף את הגיליון למייל של ה-service account.")
+
+    creds_path = st.text_input("נתיב לקובץ credentials.json (בשרת)", value="credentials.json")
+    sheet_url = st.text_input("קישור ל-Google Sheet")
+
+    if st.button("🚀 בצע שיבוץ וכתוב לגוגל שיטס"):
+        try:
+            gc = get_gspread_client(creds_path)
+            sh = gc.open_by_url(sheet_url)
+
+            workers_df = gs_read_sheet_as_df(sh, "workers")
+            req_df = gs_read_sheet_as_df(sh, "requirements")
+            pref_df = gs_read_sheet_as_df(sh, "preferences")
+
+            schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, int(week_number))
+            schedule_df = schedule_df.reset_index(drop=True)
+            schedule_df.index += 1
+
+            st.success("✅ השיבוץ הוכן בהצלחה!")
+            st.dataframe(schedule_df, use_container_width=True)
+
+            if unassigned_pairs:
+                for d, s in unassigned_pairs:
+                    st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
+
+            new_ws_name = gs_write_df_to_new_worksheet(sh, schedule_df, f"שבוע {int(week_number)}")
+            st.success(f"נכתב בהצלחה ל-Google Sheets בגיליון חדש בשם: {new_ws_name}")
+
+        except Exception as e:
+            st.error(f"שגיאה: {e}")
