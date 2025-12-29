@@ -4,6 +4,51 @@ import numpy as np
 import sqlite3, hashlib, os, hmac
 import gspread
 from google.oauth2.service_account import Credentials
+import gspread
+from google.oauth2.service_account import Credentials
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+def get_gspread_client():
+    # ב-Streamlit Cloud שמים את ה-JSON של ה-service account בתוך st.secrets
+    # בשם gcp_service_account
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=SCOPES
+    )
+    return gspread.authorize(creds)
+
+def open_spreadsheet_by_url(sheet_url: str):
+    gc = get_gspread_client()
+    return gc.open_by_url(sheet_url)
+
+def read_df(ws, headers_expected=None):
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(values[1:], columns=values[0])
+    df.columns = df.columns.str.strip()
+    if headers_expected:
+        missing = [h for h in headers_expected if h not in df.columns]
+        if missing:
+            raise ValueError(f"חסרות כותרות בגיליון '{ws.title}': {missing}")
+    return df
+
+def write_df_to_worksheet(spreadsheet, sheet_name: str, df: pd.DataFrame):
+    # יוצר גיליון אם לא קיים
+    try:
+        ws = spreadsheet.worksheet(sheet_name)
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
+
+    ws.clear()
+    data = [df.columns.tolist()] + df.astype(str).values.tolist()
+    ws.update(data)
+
 
 # =============================
 # 1) חובה: page_config ראשון
@@ -348,6 +393,32 @@ st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
 
 sheet_link = st.text_input("הדבק קישור Google Sheet (עם workers/requirements/preferences)")
 week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
+if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
+    try:
+        sh = open_spreadsheet_by_url(sheet_url)
+
+        ws_workers = sh.worksheet("workers")
+        ws_req     = sh.worksheet("requirements")
+        ws_pref    = sh.worksheet("preferences")
+
+        workers_df = read_df(ws_workers, headers_expected=["worker"])
+        req_df     = read_df(ws_req, headers_expected=["day","shift","required"])
+        pref_df    = read_df(ws_pref, headers_expected=["worker","day","shift","preference"])
+
+        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
+
+        # כתיבה חזרה
+        out_name = f"שבוע {int(week_number)}"   # או "schedule"
+        write_df_to_worksheet(sh, out_name, schedule_df)
+
+        st.success(f"נכתב בהצלחה לטאב: {out_name}")
+        st.dataframe(schedule_df)
+
+        if unassigned_pairs:
+            st.warning(f"לא שובצו: {sorted(list(unassigned_pairs))}")
+
+    except Exception as e:
+        st.exception(e)
 
 if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
     try:
@@ -381,3 +452,4 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
     except Exception as e:
         st.error(f"שגיאה: {e}")
         st.info("בדוק שיתוף Sheet למייל של ה-service account + שיש טאבים workers/requirements/preferences.")
+
