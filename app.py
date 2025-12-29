@@ -393,56 +393,42 @@ st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
 
 sheet_link = st.text_input("הדבק קישור Google Sheet (עם workers/requirements/preferences)")
 week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
-if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
-    try:
-        sh = open_spreadsheet_by_url(sheet_url)
+st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
 
-        ws_workers = sh.worksheet("workers")
-        ws_req     = sh.worksheet("requirements")
-        ws_pref    = sh.worksheet("preferences")
-
-        workers_df = read_df(ws_workers, headers_expected=["worker"])
-        req_df     = read_df(ws_req, headers_expected=["day","shift","required"])
-        pref_df    = read_df(ws_pref, headers_expected=["worker","day","shift","preference"])
-
-        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
-
-        # כתיבה חזרה
-        out_name = f"שבוע {int(week_number)}"   # או "schedule"
-        write_df_to_worksheet(sh, out_name, schedule_df)
-
-        st.success(f"נכתב בהצלחה לטאב: {out_name}")
-        st.dataframe(schedule_df)
-
-        if unassigned_pairs:
-            st.warning(f"לא שובצו: {sorted(list(unassigned_pairs))}")
-
-    except Exception as e:
-        st.exception(e)
+sheet_link = st.text_input("הדבק קישור Google Sheet (עם workers/requirements/preferences)")
+week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
 
 if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
     try:
+        # 1) בדיקה שהקישור תקין
         sheet_id = extract_sheet_id(sheet_link)
         if not sheet_id:
             st.error("לא זיהיתי Sheet ID. הדבק קישור מלא של Google Sheets.")
             st.stop()
 
+        # 2) התחברות לגוגל
         gc = get_gspread_client()
+        st.info("✅ התחברתי ל-Google API בהצלחה")
+
+        # 3) פתיחת קובץ השיטס
         sh = gc.open_by_key(sheet_id)
+        st.info(f"✅ נפתח הקובץ: {sh.title}")
 
+        # 4) קריאת הטאבים
         workers_df = read_sheet_as_df(sh, "workers")
-        req_df = read_sheet_as_df(sh, "requirements")
-        pref_df = read_sheet_as_df(sh, "preferences")
+        req_df     = read_sheet_as_df(sh, "requirements")
+        pref_df    = read_sheet_as_df(sh, "preferences")
 
+        st.info(f"workers rows: {len(workers_df)} | requirements rows: {len(req_df)} | preferences rows: {len(pref_df)}")
+
+        # 5) הרצת שיבוץ
         schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, int(week_number))
 
-        schedule_df = schedule_df.reset_index(drop=True)
-        schedule_df.index += 1
-
+        # 6) כתיבה חזרה
         new_ws_name = f"שבוע {int(week_number)}"
         write_df_to_worksheet(sh, new_ws_name, schedule_df)
 
-        st.success(f"✅ השיבוץ נכתב בהצלחה לגוגל שיטס! (טאב חדש: {new_ws_name})")
+        st.success(f"✅ השיבוץ נכתב בהצלחה! (טאב חדש: {new_ws_name})")
         st.dataframe(schedule_df, use_container_width=True)
 
         if unassigned_pairs:
@@ -450,6 +436,6 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
                 st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
 
     except Exception as e:
-        st.error(f"שגיאה: {e}")
-        st.info("בדוק שיתוף Sheet למייל של ה-service account + שיש טאבים workers/requirements/preferences.")
+        st.exception(e)
+        st.info("בדוק: שיתוף הקובץ למייל של ה-service account עם הרשאת Editor + APIs מופעלים.")
 
