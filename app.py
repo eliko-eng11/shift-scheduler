@@ -4,59 +4,14 @@ import numpy as np
 import sqlite3, hashlib, os, hmac
 import gspread
 from google.oauth2.service_account import Credentials
-import gspread
-from google.oauth2.service_account import Credentials
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-]
-
-def get_gspread_client():
-    # ב-Streamlit Cloud שמים את ה-JSON של ה-service account בתוך st.secrets
-    # בשם gcp_service_account
-    creds = Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"],
-        scopes=SCOPES
-    )
-    return gspread.authorize(creds)
-
-def open_spreadsheet_by_url(sheet_url: str):
-    gc = get_gspread_client()
-    return gc.open_by_url(sheet_url)
-
-def read_df(ws, headers_expected=None):
-    values = ws.get_all_values()
-    if not values or len(values) < 2:
-        return pd.DataFrame()
-
-    df = pd.DataFrame(values[1:], columns=values[0])
-    df.columns = df.columns.str.strip()
-    if headers_expected:
-        missing = [h for h in headers_expected if h not in df.columns]
-        if missing:
-            raise ValueError(f"חסרות כותרות בגיליון '{ws.title}': {missing}")
-    return df
-
-def write_df_to_worksheet(spreadsheet, sheet_name: str, df: pd.DataFrame):
-    # יוצר גיליון אם לא קיים
-    try:
-        ws = spreadsheet.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=20)
-
-    ws.clear()
-    data = [df.columns.tolist()] + df.astype(str).values.tolist()
-    ws.update(data)
-
 
 # =============================
-# 1) חובה: page_config ראשון
+# 0) חובה: set_page_config ראשון
 # =============================
-st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים (Google Sheets)", layout="wide")
+st.set_page_config(page_title="מערכת שיבוץ (Google Sheets)", layout="wide")
 
 # =============================
-# 2) AUTH (SQLite) - Login/Register
+# 1) AUTH (SQLite) - Login/Register
 # =============================
 DB_PATH = "users.db"
 
@@ -82,10 +37,8 @@ def create_user(username: str, password: str) -> bool:
     username = username.strip()
     if not username or not password:
         return False
-
     salt = os.urandom(16).hex()
     p_hash = hash_password(password, salt)
-
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
@@ -158,8 +111,13 @@ def auth_gate():
 auth_gate()
 
 # =============================
-# 3) Google Sheets helpers
+# 2) Google Sheets
 # =============================
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
 def extract_sheet_id(url_or_id: str) -> str:
     s = (url_or_id or "").strip()
     if "/spreadsheets/d/" in s:
@@ -167,38 +125,41 @@ def extract_sheet_id(url_or_id: str) -> str:
     return s
 
 def get_gspread_client():
-    # חייב להיות מוגדר ב-Streamlit Secrets תחת [gcp_service_account]
     if "gcp_service_account" not in st.secrets:
-        raise ValueError("חסר Secrets בשם [gcp_service_account]. הכנס את JSON ל-Secrets של Streamlit Cloud.")
-
+        raise ValueError("חסר Secrets בשם gcp_service_account (JSON של ה-service account).")
     info = dict(st.secrets["gcp_service_account"])
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = Credentials.from_service_account_info(info, scopes=scope)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     return gspread.authorize(creds)
 
-def read_sheet_as_df(sh, worksheet_name: str) -> pd.DataFrame:
+def read_sheet_as_df(sh, worksheet_name: str, expected_cols=None) -> pd.DataFrame:
     ws = sh.worksheet(worksheet_name)
     values = ws.get_all_values()
-    if not values:
-        return pd.DataFrame()
-    headers = values[0]
-    rows = values[1:]
-    return pd.DataFrame(rows, columns=headers)
+    if not values or len(values) < 2:
+        raise ValueError(f"הטאב '{worksheet_name}' ריק או חסר נתונים.")
+
+    df = pd.DataFrame(values[1:], columns=[c.strip() for c in values[0]])
+    df.columns = df.columns.str.strip()
+
+    if expected_cols:
+        missing = [c for c in expected_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"חסרות כותרות בטאב '{worksheet_name}': {missing}")
+
+    return df
 
 def write_df_to_worksheet(sh, worksheet_name: str, df: pd.DataFrame):
+    # יוצר/מנקה טאב ואז כותב
     try:
         ws = sh.worksheet(worksheet_name)
-        sh.del_worksheet(ws)
-    except Exception:
-        pass
-    ws = sh.add_worksheet(title=worksheet_name, rows=max(100, len(df)+5), cols=max(20, len(df.columns)+5))
-    ws.update([df.columns.tolist()] + df.astype(str).values.tolist())
+        ws.clear()
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=20)
+
+    data = [df.columns.tolist()] + df.astype(str).values.tolist()
+    ws.update(data, value_input_option="RAW")
 
 # =============================
-# 4) אלגוריתם שיבוץ (כמו אצלך)
+# 3) אלגוריתם שיבוץ
 # =============================
 def simple_assignment(cost_matrix):
     used_rows, used_cols = set(), set()
@@ -209,7 +170,7 @@ def simple_assignment(cost_matrix):
     for _ in range(min(rows, cols)):
         best, best_cost = None, 10**12
         for i in range(rows):
-            if i in used_rows: 
+            if i in used_rows:
                 continue
             for j in range(cols):
                 if j in used_cols:
@@ -231,33 +192,36 @@ def simple_assignment(cost_matrix):
     return list(rr), list(cc)
 
 def build_schedule(workers_df, req_df, pref_df, week_number):
-    workers_df.columns = workers_df.columns.str.strip()
-    req_df.columns = req_df.columns.str.strip()
-    pref_df.columns = pref_df.columns.str.strip()
+    # ניקוי עמודות
+    for df in (workers_df, req_df, pref_df):
+        df.columns = df.columns.str.strip()
 
+    # כותרות (אצלך כבר באנגלית, אבל נשאיר תאימות)
     workers_df = workers_df.rename(columns={"שם עובד": "worker"})
-    req_df = req_df.rename(columns={"יום": "day", "משמרת": "shift", "כמות נדרשת": "required"})
-    pref_df = pref_df.rename(columns={"עדיפות": "preference", "עובד": "worker", "יום": "day", "משמרת": "shift"})
+    req_df     = req_df.rename(columns={"יום": "day", "משמרת": "shift", "כמות נדרשת": "required"})
+    pref_df    = pref_df.rename(columns={"עדיפות": "preference", "עובד": "worker", "יום": "day", "משמרת": "shift"})
 
-    workers_df["worker"] = workers_df.get("worker", "").astype(str).str.strip()
-
+    # ניקוי טקסט
+    workers_df["worker"] = workers_df["worker"].astype(str).str.strip()
     for df in (req_df, pref_df):
-        if "day" in df.columns: df["day"] = df["day"].astype(str).str.strip()
-        if "shift" in df.columns: df["shift"] = df["shift"].astype(str).str.strip()
-        if "worker" in df.columns: df["worker"] = df["worker"].astype(str).str.strip()
+        df["day"] = df["day"].astype(str).str.strip()
+        df["shift"] = df["shift"].astype(str).str.strip()
+        if "worker" in df.columns:
+            df["worker"] = df["worker"].astype(str).str.strip()
 
-    workers = workers_df["worker"].dropna().astype(str).tolist()
-    if not workers:
-        raise ValueError("לא נמצאו עובדים בגיליון workers")
-
+    # המרות מספריות (קריטי!)
     req_df["required"] = pd.to_numeric(req_df["required"], errors="coerce").fillna(0).astype(int)
+    pref_df["preference"] = pd.to_numeric(pref_df["preference"], errors="coerce").fillna(-1).astype(int)
 
+    workers = workers_df["worker"].dropna().tolist()
+    if not workers:
+        raise ValueError("לא נמצאו עובדים בטאב workers")
+
+    # בניית סלוטים
     shift_slots = []
     day_shift_pairs = []
     for _, row in req_df.iterrows():
-        day = str(row["day"])
-        shift = str(row["shift"])
-        req = int(row["required"])
+        day, shift, req = row["day"], row["shift"], int(row["required"])
         if req <= 0:
             continue
         pair = (day, shift)
@@ -267,31 +231,24 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
             shift_slots.append((day, shift, i))
 
     if not shift_slots:
-        raise ValueError("לא נמצאו דרישות משמרות בגיליון requirements")
+        raise ValueError("אין דרישות משמרות בטאב requirements")
 
     ordered_days = list(dict.fromkeys([d for d, _, _ in shift_slots]))
-    full_shifts = list(dict.fromkeys([s for _, s, _ in shift_slots]))
+    full_shifts  = list(dict.fromkeys([s for _, s, _ in shift_slots]))
 
-    pref_dict = {}
-    for _, row in pref_df.iterrows():
-        w = str(row["worker"])
-        d = str(row["day"])
-        s = str(row["shift"])
-        try:
-            p = int(row["preference"])
-        except Exception:
-            continue
-        pref_dict[(w, d, s)] = p
+    # העדפות למילון
+    pref_dict = {(r["worker"], r["day"], r["shift"]): int(r["preference"]) for _, r in pref_df.iterrows()}
 
+    # צירופי עובדים אפשריים (pref>=0)
     worker_copies = []
     for w in workers:
-        for (d, s) in day_shift_pairs:
-            p = pref_dict.get((w, d, s), -1)
-            if p >= 0:
+        for d, s in day_shift_pairs:
+            if pref_dict.get((w, d, s), -1) >= 0:
                 worker_copies.append((w, d, s))
     if not worker_copies:
-        raise ValueError("לא נמצאו העדיפויות החוקיות (>=0) בגיליון preferences")
+        raise ValueError("אין העדפות חוקיות (>=0) בטאב preferences")
 
+    # עלויות
     cost_matrix = []
     for w, d, s in worker_copies:
         row_costs = []
@@ -313,8 +270,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     worker_day_shift_assigned = set()
     max_shifts_per_worker = len(shift_slots) // len(workers) + 1
 
-    pairs = list(zip(row_ind, col_ind))
-    pairs.sort(key=lambda x: cost_matrix[x[0], x[1]])
+    pairs = sorted(zip(row_ind, col_ind), key=lambda x: cost_matrix[x[0], x[1]])
 
     for r, c in pairs:
         worker, _, _ = worker_copies[r]
@@ -322,15 +278,16 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         slot = (slot_day, slot_shift, slot_i)
         wds_key = (worker, slot_day, slot_shift)
 
-        if cost_matrix[r][c] >= 1e6: 
+        if cost_matrix[r][c] >= 1e6:
             continue
-        if wds_key in worker_day_shift_assigned: 
+        if wds_key in worker_day_shift_assigned:
             continue
-        if slot in used_slots: 
+        if slot in used_slots:
             continue
-        if worker_shift_count[worker] >= max_shifts_per_worker: 
+        if worker_shift_count[worker] >= max_shifts_per_worker:
             continue
 
+        # מניעת משמרות צמודות
         try:
             current_shift_index = full_shifts.index(slot_shift)
         except ValueError:
@@ -341,18 +298,18 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
 
         used_slots.add(slot)
         worker_day_shift_assigned.add(wds_key)
-        assignments.append({"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": worker})
+        assignments.append({"שבוע": int(week_number), "יום": slot_day, "משמרת": slot_shift, "עובד": worker})
         worker_shift_count[worker] += 1
         worker_daily_shifts[worker][slot_day].append(slot_shift)
 
+    # השלמות
     remaining_slots = [slot for slot in shift_slots if slot not in used_slots]
     unassigned_pairs = set()
 
     for slot_day, slot_shift, slot_i in remaining_slots:
         assigned = False
         for w in workers:
-            pref = pref_dict.get((w, slot_day, slot_shift), -1)
-            if pref < 0:
+            if pref_dict.get((w, slot_day, slot_shift), -1) < 0:
                 continue
 
             try:
@@ -369,7 +326,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
 
             used_slots.add((slot_day, slot_shift, slot_i))
             worker_day_shift_assigned.add(wds_key)
-            assignments.append({"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": w})
+            assignments.append({"שבוע": int(week_number), "יום": slot_day, "משמרת": slot_shift, "עובד": w})
             worker_shift_count[w] += 1
             worker_daily_shifts[w][slot_day].append(slot_shift)
             assigned = True
@@ -380,55 +337,46 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
 
     df = pd.DataFrame(assignments)
     if df.empty:
-        raise ValueError("לא נוצר אף שיבוץ. בדוק נתונים.")
+        raise ValueError("לא נוצר שיבוץ. בדוק נתונים/העדפות.")
     df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
     return df, unassigned_pairs
 
 # =============================
-# 5) UI - Google Sheets
+# 4) UI
 # =============================
 st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
 
-sheet_link = st.text_input("הדבק קישור Google Sheet (עם workers/requirements/preferences)")
-week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
-st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
-
-sheet_link = st.text_input("הדבק קישור Google Sheet (עם workers/requirements/preferences)")
+sheet_link = st.text_input("הדבק קישור של Google Sheet (עם טאבים workers/requirements/preferences)")
 week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
 
 if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
     try:
-        # 1) בדיקה שהקישור תקין
         sheet_id = extract_sheet_id(sheet_link)
         if not sheet_id:
             st.error("לא זיהיתי Sheet ID. הדבק קישור מלא של Google Sheets.")
             st.stop()
 
-        # 2) התחברות לגוגל
         gc = get_gspread_client()
-        st.info("✅ התחברתי ל-Google API בהצלחה")
-
-        # 3) פתיחת קובץ השיטס
         sh = gc.open_by_key(sheet_id)
+
+        # debug מידע ברור
         st.info(f"✅ נפתח הקובץ: {sh.title}")
+        st.info(f"✅ טאבים קיימים: {[w.title for w in sh.worksheets()]}")
 
-        # 4) קריאת הטאבים
-        workers_df = read_sheet_as_df(sh, "workers")
-        req_df     = read_sheet_as_df(sh, "requirements")
-        pref_df    = read_sheet_as_df(sh, "preferences")
+        workers_df = read_sheet_as_df(sh, "workers", expected_cols=["worker"])
+        req_df     = read_sheet_as_df(sh, "requirements", expected_cols=["day","shift","required"])
+        pref_df    = read_sheet_as_df(sh, "preferences", expected_cols=["worker","day","shift","preference"])
 
-        st.info(f"workers rows: {len(workers_df)} | requirements rows: {len(req_df)} | preferences rows: {len(pref_df)}")
+        st.info(f"📌 workers={len(workers_df)} | requirements={len(req_df)} | preferences={len(pref_df)}")
 
-        # 5) הרצת שיבוץ
         schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, int(week_number))
 
-        # 6) כתיבה חזרה
-        new_ws_name = f"שבוע {int(week_number)}"
-        write_df_to_worksheet(sh, new_ws_name, schedule_df)
+        out_name = f"שבוע {int(week_number)}"
+        write_df_to_worksheet(sh, out_name, schedule_df)
 
-        st.success(f"✅ השיבוץ נכתב בהצלחה! (טאב חדש: {new_ws_name})")
+        st.success(f"✅ נכתב בהצלחה לטאב: {out_name}")
         st.dataframe(schedule_df, use_container_width=True)
 
         if unassigned_pairs:
@@ -437,5 +385,4 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
 
     except Exception as e:
         st.exception(e)
-        st.info("בדוק: שיתוף הקובץ למייל של ה-service account עם הרשאת Editor + APIs מופעלים.")
-
+        st.info("אם זה עדיין נופל: 99% שזה שיתוף/הרשאה. ודא שיתפת את ה-Sheet למייל של ה-service account כ-Editor.")
