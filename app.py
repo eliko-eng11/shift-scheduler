@@ -1,55 +1,57 @@
-st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
+import streamlit as st
+import gspread
+from google.oauth2.service_account import Credentials
+import pandas as pd
 
-sheet_link = st.text_input("הדבק קישור Google Sheet (עם tabs: workers / requirements / preferences)")
-week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
+st.title("🔍 בודק חיבור לגוגל שיטס")
 
-if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
+# 1. בדיקת קיום ה-Secrets
+st.subheader("1. בדיקת 'הכספת' (Secrets)")
+if "gcp_service_account" not in st.secrets:
+    st.error("❌ המפתח 'gcp_service_account' לא נמצא ב-Secrets!")
+    st.info("וודא שהגדרת אותו בתוך .streamlit/secrets.toml או ב-Dashboard של סטרימליט")
+    st.stop()
+else:
+    st.success("✅ המפתח נמצא בכספת")
+
+# 2. ניסיון התחברות ל-Google Auth
+st.subheader("2. ניסיון אימות (Authentication)")
+try:
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds_info = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+    client = gspread.authorize(creds)
+    st.success("✅ התחברות לשירותי גוגל הצליחה!")
+except Exception as e:
+    st.error(f"❌ נכשלה ההתחברות לגוגל. שגיאה: {e}")
+    st.stop()
+
+# 3. בדיקת גישה לקובץ ספציפי
+st.subheader("3. בדיקת גישה לקובץ וטאבים")
+sheet_url = st.text_input("הדבק כאן את קישור ה-Google Sheet לבדיקה:")
+
+if sheet_url:
     try:
-        st.write("שלב 1: חילוץ Sheet ID...")
-        sheet_id = extract_sheet_id(sheet_link)
-        st.write("Sheet ID:", sheet_id)
-        if not sheet_id:
-            st.error("לא זיהיתי Sheet ID. הדבק קישור מלא של Google Sheets.")
-            st.stop()
-
-        st.write("שלב 2: יצירת חיבור ל-Google (service account)...")
-        gc = get_gspread_client()
-        st.success("✅ התחברות ל-Google הצליחה")
-
-        st.write("שלב 3: פתיחת הקובץ לפי ID...")
-        sh = gc.open_by_key(sheet_id)
-        st.success(f"✅ נפתח הקובץ: {sh.title}")
-
-        st.write("שלב 4: רשימת טאבים בקובץ:")
-        tab_names = [w.title for w in sh.worksheets()]
-        st.write(tab_names)
-
-        # בדיקת טאבים
-        required_tabs = {"workers", "requirements", "preferences"}
-        if not required_tabs.issubset(set(tab_names)):
-            st.error(f"חסרים טאבים. חייב להיות: {sorted(list(required_tabs))}")
-            st.stop()
-
-        st.write("שלב 5: קריאת הנתונים...")
-        workers_df = read_sheet_as_df(sh, "workers")
-        req_df     = read_sheet_as_df(sh, "requirements")
-        pref_df    = read_sheet_as_df(sh, "preferences")
-
-        st.write("שורות שנקראו:",
-                 {"workers": len(workers_df), "requirements": len(req_df), "preferences": len(pref_df)})
-
-        st.write("שלב 6: הרצת שיבוץ...")
-        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, int(week_number))
-
-        st.write("שלב 7: כתיבה חזרה לטאב חדש...")
-        new_ws_name = f"שבוע {int(week_number)}"
-        write_df_to_worksheet(sh, new_ws_name, schedule_df)
-
-        st.success(f"✅ השיבוץ נכתב בהצלחה! טאב חדש: {new_ws_name}")
-        st.dataframe(schedule_df, use_container_width=True)
-
-        if unassigned_pairs:
-            st.warning(f"⚠️ לא שובצו: {sorted(list(unassigned_pairs))}")
-
+        sh = client.open_by_url(sheet_url)
+        st.success(f"✅ הצלחתי לפתוח את הקובץ: {sh.title}")
+        
+        # בדיקת קיום הטאבים הדרושים
+        required_sheets = ["workers", "requirements", "preferences"]
+        existing_sheets = [s.title for s in sh.worksheets()]
+        
+        for name in required_sheets:
+            if name in existing_sheets:
+                st.write(f"✔️ גיליון '{name}' נמצא.")
+            else:
+                st.warning(f"⚠️ גיליון '{name}' חסר בקובץ!")
+                
+    except gspread.exceptions.SpreadsheetNotFound:
+        st.error("❌ הקובץ לא נמצא. וודא שהקישור תקין.")
+    except gspread.exceptions.APIError as e:
+        if "403" in str(e):
+            st.error("❌ שגיאת הרשאה (403).")
+            st.info(f"**הפתרון:** עליך לשתף (Share) את הקובץ עם המייל: `{creds_info['client_email']}`")
+        else:
+            st.error(f"שגיאת API: {e}")
     except Exception as e:
-        st.exception(e)
+        st.error(f"שגיאה לא צפויה: {e}")
