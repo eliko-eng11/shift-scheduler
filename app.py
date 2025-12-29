@@ -123,10 +123,18 @@ SCOPE = [
 ]
 
 def get_gspread_client():
-    # ב-Streamlit Cloud זה מגיע מ-secrets
-    creds_info = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
+    # לוקחים עותק של ה-secrets
+    creds_info = dict(st.secrets["gcp_service_account"])
+
+    # 🔑 תיקון קריטי: אם המפתח נשמר עם "\n" – נהפוך לשורות אמיתיות
+    creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+
+    creds = Credentials.from_service_account_info(
+        creds_info,
+        scopes=SCOPE
+    )
     return gspread.authorize(creds)
+
 
 def read_sheet_as_df(sh, worksheet_name: str) -> pd.DataFrame:
     ws = sh.worksheet(worksheet_name)
@@ -393,3 +401,4 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
 
     except Exception as e:
         st.error(f"שגיאה: {e}")
+
