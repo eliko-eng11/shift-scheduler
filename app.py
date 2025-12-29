@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
-from io import BytesIO
 import sqlite3
 import hashlib
 import os
@@ -19,7 +18,6 @@ st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", l
 # =============================
 DB_PATH = "users.db"
 
-
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
@@ -34,38 +32,25 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 def hash_password(password: str, salt: str) -> str:
-    dk = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        120_000
-    )
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return dk.hex()
-
 
 def create_user(username: str, password: str) -> bool:
     username = username.strip()
     if not username or not password:
         return False
-
     salt = os.urandom(16).hex()
     p_hash = hash_password(password, salt)
-
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)",
-            (username, p_hash, salt)
-        )
+        cur.execute("INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)", (username, p_hash, salt))
         conn.commit()
         conn.close()
         return True
     except sqlite3.IntegrityError:
         return False
-
 
 def verify_user(username: str, password: str) -> bool:
     username = username.strip()
@@ -74,23 +59,18 @@ def verify_user(username: str, password: str) -> bool:
     cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
     row = cur.fetchone()
     conn.close()
-
     if not row:
         return False
-
     stored_hash, salt = row
     check_hash = hash_password(password, salt)
     return hmac.compare_digest(stored_hash, check_hash)
 
-
 def auth_gate():
     init_db()
-
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.username = ""
 
-    # אם מחובר - ממשיכים לאפליקציה
     if st.session_state.logged_in:
         st.sidebar.success(f"מחובר כ: {st.session_state.username}")
         if st.sidebar.button("התנתקות"):
@@ -99,7 +79,6 @@ def auth_gate():
             st.rerun()
         return
 
-    # אם לא מחובר - מציג Login/Register ועוצר כאן
     st.title("🔐 התחברות למערכת השיבוץ")
     tab_login, tab_register = st.tabs(["התחברות", "רישום"])
 
@@ -132,16 +111,20 @@ def auth_gate():
 
     st.stop()
 
-
 # קודם כל אימות!
 auth_gate()
+
+# =============================
+# 3) Google Sheets helpers
+# =============================
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
 def get_gspread_client():
-    creds_info = st.secrets["gcp_service_account"]  # מגיע מה-Secrets
+    # ב-Streamlit Cloud זה מגיע מ-secrets
+    creds_info = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
     return gspread.authorize(creds)
 
@@ -155,26 +138,22 @@ def read_sheet_as_df(sh, worksheet_name: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=headers)
 
 def write_df_to_worksheet(sh, worksheet_name: str, df: pd.DataFrame):
-    # אם יש גיליון קיים – ננקה ונכתוב מחדש. אם לא – ניצור.
     try:
         ws = sh.worksheet(worksheet_name)
         ws.clear()
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=worksheet_name, rows=1000, cols=30)
 
-    # כתיבה מהירה: כותרות + נתונים
     data = [df.columns.tolist()] + df.astype(str).values.tolist()
     ws.update("A1", data)
 
-
 # =============================
-# 3) אלגוריתם השיבוץ שלך
+# 4) האלגוריתם שלך (לא נוגע)
 # =============================
 def simple_assignment(cost_matrix):
     used_rows = set()
     used_cols = set()
     assignments = []
-
     rows = len(cost_matrix)
     cols = len(cost_matrix[0]) if rows > 0 else 0
 
@@ -202,7 +181,6 @@ def simple_assignment(cost_matrix):
         return [], []
     rr, cc = zip(*assignments)
     return list(rr), list(cc)
-
 
 def build_schedule(workers_df, req_df, pref_df, week_number):
     workers_df.columns = workers_df.columns.str.strip()
@@ -320,10 +298,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         except ValueError:
             current_shift_index = 0
 
-        if any(
-            abs(full_shifts.index(x) - current_shift_index) == 1
-            for x in worker_daily_shifts[worker][slot_day]
-        ):
+        if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[worker][slot_day]):
             continue
 
         used_slots.add(slot)
@@ -348,10 +323,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
             except ValueError:
                 current_shift_index = 0
 
-            if any(
-                abs(full_shifts.index(x) - current_shift_index) == 1
-                for x in worker_daily_shifts[w][slot_day]
-            ):
+            if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[w][slot_day]):
                 continue
 
             wds_key = (w, slot_day, slot_shift)
@@ -377,22 +349,18 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
-
     return df, unassigned_pairs
 
-
 # =============================
-# 4) UI של האפליקציה אחרי התחברות
+# 5) UI - Google Sheets only
 # =============================
-st.title("🛠️ מערכת שיבוץ משמרות מעולה")
+st.title("🛠️ מערכת שיבוץ משמרות (Google Sheets)")
 
-st.title("🛠️ מערכת שיבוץ משמרות מעולה (Google Sheets)")
-
-sheet_url = st.text_input("הדבק כאן קישור ל-Google Sheet")
+sheet_url = st.text_input("הדבק קישור ל-Google Sheet (עם workers/requirements/preferences)")
 week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
 
 if not sheet_url:
-    st.info("הדבק קישור ל-Google Sheet שיש בו גיליונות: workers, requirements, preferences")
+    st.info("הדבק קישור ל-Google Sheet כדי להתחיל.")
     st.stop()
 
 if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
@@ -400,7 +368,6 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
         gc = get_gspread_client()
         sh = gc.open_by_url(sheet_url)
 
-        # קריאה מהשיטס במקום אקסל
         workers_df = read_sheet_as_df(sh, "workers")
         req_df     = read_sheet_as_df(sh, "requirements")
         pref_df    = read_sheet_as_df(sh, "preferences")
@@ -408,7 +375,6 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
         schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
 
         schedule_df = schedule_df.reset_index(drop=True)
-        schedule_df.index += 1
 
         st.success("✅ השיבוץ הוכן בהצלחה!")
         st.dataframe(schedule_df, use_container_width=True)
@@ -417,59 +383,13 @@ if st.button("🚀 בצע שיבוץ וכתוב חזרה ל-Google Sheet"):
             for d, s in unassigned_pairs:
                 st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
 
-        # כתיבה חזרה ל-Google Sheet
         new_sheet_name = f"שבוע {int(week_number)}"
-        # אם השם קיים – נוסיף (2)
         existing = [ws.title for ws in sh.worksheets()]
         if new_sheet_name in existing:
             new_sheet_name = f"{new_sheet_name} (2)"
 
         write_df_to_worksheet(sh, new_sheet_name, schedule_df)
-
         st.success(f"✅ נכתב חזרה ל-Google Sheet בגיליון: {new_sheet_name}")
 
     except Exception as e:
         st.error(f"שגיאה: {e}")
-
-        req_df = pd.read_excel(xls, sheet_name="requirements")
-        pref_df = pd.read_excel(xls, sheet_name="preferences")
-
-        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
-
-        schedule_df = schedule_df.reset_index(drop=True)
-        schedule_df.index += 1
-
-        st.success("✅ השיבוץ הוכן בהצלחה!")
-        st.dataframe(schedule_df, use_container_width=True)
-
-        if unassigned_pairs:
-            for d, s in unassigned_pairs:
-                st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
-
-        new_sheet_name = f"שבוע {int(week_number)}"
-        original_sheet_names = xls.sheet_names
-
-        if new_sheet_name in original_sheet_names:
-            st.warning(f"קיים כבר גיליון בשם '{new_sheet_name}'. הגיליון החדש ייקרא '{new_sheet_name} (2)'.")
-            new_sheet_name = f"{new_sheet_name} (2)"
-
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            for sheet in original_sheet_names:
-                df_old = pd.read_excel(xls, sheet_name=sheet)
-                df_old.to_excel(writer, sheet_name=sheet, index=False)
-
-            schedule_df.to_excel(writer, sheet_name=new_sheet_name, index=False)
-
-        output.seek(0)
-
-        st.download_button(
-            label="⬇️ הורד את הקובץ המעודכן (עם היסטוריית השבועות)",
-            data=output,
-            file_name=uploaded_file.name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    except Exception as e:
-        st.error(f"שגיאה במהלך השיבוץ: {e}")
-
