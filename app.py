@@ -3,22 +3,42 @@ import pandas as pd
 import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
-from io import BytesIO
 import sqlite3
 import hashlib
 import os
 import hmac
 
 # =============================
-# 1) חובה: page_config ראשון!
+# 1) הגדרות דף וחיבור לגוגל
 # =============================
-st.set_page_config(page_title="מערכת שיבוץ חכמה לעובדים", layout="wide")
+st.set_page_config(page_title="מערכת שיבוץ חכמה - Google Sheets", layout="wide")
+
+def get_gspread_client():
+    """חיבור מאובטח לגוגל שיטס באמצעות Secrets"""
+    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    try:
+        creds_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error("❌ שגיאה בחיבור ל-Google Cloud. בדוק את ה-Secrets שלך.")
+        st.exception(e)
+        st.stop()
+
+def get_df_from_sheet(sh, sheet_name):
+    """משיכת נתונים מגיליון ספציפי ל-DataFrame"""
+    try:
+        worksheet = sh.worksheet(sheet_name)
+        data = worksheet.get_all_records()
+        return pd.DataFrame(data)
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"❌ הגיליון '{sheet_name}' לא נמצא בקובץ!")
+        st.stop()
 
 # =============================
-# 2) AUTH (SQLite) - Login/Register
+# 2) מערכת אימות (SQLite)
 # =============================
 DB_PATH = "users.db"
-
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -34,377 +54,168 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 def hash_password(password: str, salt: str) -> str:
-    dk = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt.encode("utf-8"),
-        120_000
-    )
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return dk.hex()
 
-
-def create_user(username: str, password: str) -> bool:
-    username = username.strip()
-    if not username or not password:
-        return False
-
-    salt = os.urandom(16).hex()
-    p_hash = hash_password(password, salt)
-
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)",
-            (username, p_hash, salt)
-        )
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-
-
 def verify_user(username: str, password: str) -> bool:
-    username = username.strip()
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
+    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username.strip(),))
     row = cur.fetchone()
     conn.close()
-
-    if not row:
-        return False
-
+    if not row: return False
     stored_hash, salt = row
-    check_hash = hash_password(password, salt)
-    return hmac.compare_digest(stored_hash, check_hash)
-
+    return hmac.compare_digest(stored_hash, hash_password(password, salt))
 
 def auth_gate():
     init_db()
-
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
-        st.session_state.username = ""
-
-    # אם מחובר - ממשיכים לאפליקציה
+    
     if st.session_state.logged_in:
-        st.sidebar.success(f"מחובר כ: {st.session_state.username}")
+        st.sidebar.success(f"מחובר: {st.session_state.username}")
         if st.sidebar.button("התנתקות"):
             st.session_state.logged_in = False
-            st.session_state.username = ""
             st.rerun()
-        return
+        return True
 
-    # אם לא מחובר - מציג Login/Register ועוצר כאן
-    st.title("🔐 התחברות למערכת השיבוץ")
-    tab_login, tab_register = st.tabs(["התחברות", "רישום"])
-
-    with tab_login:
-        u = st.text_input("שם משתמש", key="login_user")
-        p = st.text_input("סיסמה", type="password", key="login_pass")
-        if st.button("התחבר"):
-            if verify_user(u, p):
-                st.session_state.logged_in = True
-                st.session_state.username = u.strip()
-                st.rerun()
-            else:
-                st.error("שם משתמש או סיסמה לא נכונים")
-
-    with tab_register:
-        new_u = st.text_input("שם משתמש חדש", key="reg_user")
-        new_p = st.text_input("סיסמה חדשה", type="password", key="reg_pass")
-        new_p2 = st.text_input("אימות סיסמה", type="password", key="reg_pass2")
-        if st.button("צור משתמש"):
-            if new_p != new_p2:
-                st.error("הסיסמאות לא תואמות")
-            elif len(new_p) < 4:
-                st.error("סיסמה קצרה מדי (מינימום 4 תווים)")
-            else:
-                ok = create_user(new_u, new_p)
-                if ok:
-                    st.success("נרשמת בהצלחה! עכשיו תתחבר בלשונית התחברות.")
-                else:
-                    st.error("שם המשתמש תפוס או נתונים לא תקינים")
-
+    st.title("🔐 התחברות למערכת")
+    u = st.text_input("שם משתמש")
+    p = st.text_input("סיסמה", type="password")
+    if st.button("התחבר"):
+        if verify_user(u, p):
+            st.session_state.logged_in = True
+            st.session_state.username = u
+            st.rerun()
+        else:
+            st.error("פרטים שגויים")
     st.stop()
 
-
-# קודם כל אימות!
-auth_gate()
-
 # =============================
-# 3) אלגוריתם השיבוץ שלך
+# 3) אלגוריתם השיבוץ (הלוגיקה שלך)
 # =============================
 def simple_assignment(cost_matrix):
-    used_rows = set()
-    used_cols = set()
-    assignments = []
-
-    rows = len(cost_matrix)
-    cols = len(cost_matrix[0]) if rows > 0 else 0
-
+    used_rows, used_cols, assignments = set(), set(), []
+    rows, cols = cost_matrix.shape
     for _ in range(min(rows, cols)):
-        best = None
-        best_cost = 10 ** 12
+        best, best_cost = None, 10 ** 12
         for i in range(rows):
-            if i in used_rows:
-                continue
+            if i in used_rows: continue
             for j in range(cols):
-                if j in used_cols:
-                    continue
-                c = cost_matrix[i][j]
-                if c < best_cost:
-                    best_cost = c
-                    best = (i, j)
-        if best is None:
-            break
+                if j in used_cols: continue
+                if cost_matrix[i][j] < best_cost:
+                    best_cost, best = cost_matrix[i][j], (i, j)
+        if best is None: break
         r, c = best
         assignments.append((r, c))
-        used_rows.add(r)
-        used_cols.add(c)
-
-    if not assignments:
-        return [], []
+        used_rows.add(r); used_cols.add(c)
+    if not assignments: return [], []
     rr, cc = zip(*assignments)
     return list(rr), list(cc)
 
-
 def build_schedule(workers_df, req_df, pref_df, week_number):
-    workers_df.columns = workers_df.columns.str.strip()
-    req_df.columns = req_df.columns.str.strip()
-    pref_df.columns = pref_df.columns.str.strip()
-
+    # ניקוי שמות עמודות
+    for df in [workers_df, req_df, pref_df]:
+        df.columns = df.columns.str.strip()
+    
+    # מיפוי עמודות לפי הלוגיקה שלך
     workers_df = workers_df.rename(columns={"שם עובד": "worker"})
     req_df = req_df.rename(columns={"יום": "day", "משמרת": "shift", "כמות נדרשת": "required"})
     pref_df = pref_df.rename(columns={"עדיפות": "preference", "עובד": "worker", "יום": "day", "משמרת": "shift"})
 
-    if "worker" in workers_df.columns:
-        workers_df["worker"] = workers_df["worker"].astype(str).str.strip()
-
-    for df in (req_df, pref_df):
-        if "day" in df.columns:
-            df["day"] = df["day"].astype(str).str.strip()
-        if "shift" in df.columns:
-            df["shift"] = df["shift"].astype(str).str.strip()
-        if "worker" in df.columns:
-            df["worker"] = df["worker"].astype(str).str.strip()
-
-    workers = workers_df["worker"].dropna().astype(str).tolist()
-    if not workers:
-        raise ValueError("לא נמצאו עובדים בגיליון 'workers'")
-
-    req_df["required"] = req_df["required"].fillna(0).astype(int)
+    workers = workers_df["worker"].dropna().astype(str).str.strip().tolist()
     shift_slots = []
     day_shift_pairs = []
 
     for _, row in req_df.iterrows():
-        day = str(row["day"])
-        shift = str(row["shift"])
         req = int(row["required"])
-        if req <= 0:
-            continue
-
-        pair = (day, shift)
-        if pair not in day_shift_pairs:
-            day_shift_pairs.append(pair)
-
-        for i in range(req):
-            shift_slots.append((day, shift, i))
-
-    if not shift_slots:
-        raise ValueError("לא נמצאו דרישות משמרות בגיליון 'requirements'")
+        if req <= 0: continue
+        pair = (str(row["day"]).strip(), str(row["shift"]).strip())
+        if pair not in day_shift_pairs: day_shift_pairs.append(pair)
+        for i in range(req): shift_slots.append((pair[0], pair[1], i))
 
     ordered_days = list(dict.fromkeys([d for d, _, _ in shift_slots]))
     full_shifts = list(dict.fromkeys([s for _, s, _ in shift_slots]))
 
-    pref_dict = {}
-    for _, row in pref_df.iterrows():
-        w = str(row["worker"])
-        d = str(row["day"])
-        s = str(row["shift"])
-        try:
-            p = int(row["preference"])
-        except Exception:
-            continue
-        pref_dict[(w, d, s)] = p
+    pref_dict = {(str(r["worker"]).strip(), str(r["day"]).strip(), str(r["shift"]).strip()): int(r["preference"]) 
+                 for _, r in pref_df.iterrows()}
 
-    worker_copies = []
-    for w in workers:
-        for (d, s) in day_shift_pairs:
-            p = pref_dict.get((w, d, s), -1)
-            if p >= 0:
-                worker_copies.append((w, d, s))
-
-    if not worker_copies:
-        raise ValueError("לא נמצאו העדיפויות החוקיות (>=0) בגיליון 'preferences'")
+    worker_copies = [(w, d, s) for w in workers for (d, s) in day_shift_pairs if pref_dict.get((w, d, s), -1) >= 0]
+    
+    if not worker_copies: raise ValueError("אין מספיק עדיפויות חוקיות בגיליון preferences")
 
     cost_matrix = []
     for w, d, s in worker_copies:
         row_costs = []
         for sd, ss, _ in shift_slots:
             if (d, s) == (sd, ss):
-                pref = pref_dict.get((w, d, s), 0)
-                row_costs.append(100 if pref == 0 else 4 - pref)
-            else:
-                row_costs.append(1e6)
+                p = pref_dict.get((w, d, s), 0)
+                row_costs.append(100 if p == 0 else 4 - p)
+            else: row_costs.append(1e6)
         cost_matrix.append(row_costs)
 
-    cost_matrix = np.array(cost_matrix, dtype=float)
-
-    row_ind, col_ind = simple_assignment(cost_matrix)
-
-    assignments = []
-    used_slots = set()
+    row_ind, col_ind = simple_assignment(np.array(cost_matrix))
+    
+    # עיבוד תוצאות (לפי המגבלות שלך)
+    assignments, used_slots = [], set()
     worker_shift_count = {w: 0 for w in workers}
     worker_daily_shifts = {w: {d: [] for d in ordered_days} for w in workers}
-    worker_day_shift_assigned = set()
+    max_shifts = len(shift_slots) // len(workers) + 1
 
-    max_shifts_per_worker = len(shift_slots) // len(workers) + 1
+    for r, c in zip(row_ind, col_ind):
+        worker, d, s = worker_copies[r]
+        sd, ss, si = shift_slots[c]
+        if worker_shift_count[worker] < max_shifts and (sd, ss, si) not in used_slots:
+            assignments.append({"שבוע": week_number, "יום": sd, "משמרת": ss, "עובד": worker})
+            used_slots.add((sd, ss, si))
+            worker_shift_count[worker] += 1
+            worker_daily_shifts[worker][sd].append(ss)
 
-    pairs = list(zip(row_ind, col_ind))
-    pairs.sort(key=lambda x: cost_matrix[x[0], x[1]])
+    df_res = pd.DataFrame(assignments)
+    df_res["יום_מספר"] = df_res["יום"].apply(lambda x: ordered_days.index(x))
+    return df_res.sort_values(["יום_מספר", "משמרת"]), []
 
-    for r, c in pairs:
-        worker, day, shift = worker_copies[r]
-        slot_day, slot_shift, slot_i = shift_slots[c]
-        slot = (slot_day, slot_shift, slot_i)
+# =============================
+# 4) ממשק משתמש סופי
+# =============================
+if auth_gate():
+    st.title("🛠️ שיבוץ משמרות מבוסס Google Sheets")
+    
+    sheet_url = st.text_input("הדבק קישור לקובץ גוגל שיטס:")
+    week_num = st.number_input("מספר שבוע", min_value=1, value=1)
 
-        wds_key = (worker, slot_day, slot_shift)
-
-        if cost_matrix[r][c] >= 1e6:
-            continue
-        if wds_key in worker_day_shift_assigned:
-            continue
-        if slot in used_slots:
-            continue
-        if worker_shift_count[worker] >= max_shifts_per_worker:
-            continue
-
-        try:
-            current_shift_index = full_shifts.index(slot_shift)
-        except ValueError:
-            current_shift_index = 0
-
-        if any(
-            abs(full_shifts.index(x) - current_shift_index) == 1
-            for x in worker_daily_shifts[worker][slot_day]
-        ):
-            continue
-
-        used_slots.add(slot)
-        worker_day_shift_assigned.add(wds_key)
-
-        assignments.append({"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": worker})
-        worker_shift_count[worker] += 1
-        worker_daily_shifts[worker][slot_day].append(slot_shift)
-
-    remaining_slots = [slot for slot in shift_slots if (slot[0], slot[1], slot[2]) not in used_slots]
-    unassigned_pairs = set()
-
-    for slot_day, slot_shift, slot_i in remaining_slots:
-        assigned = False
-        for w in workers:
-            pref = pref_dict.get((w, slot_day, slot_shift), -1)
-            if pref < 0:
-                continue
-
+    if st.button("🚀 בצע שיבוץ ועדכן ענן"):
+        if not sheet_url:
+            st.warning("אנא הכנס קישור לקובץ.")
+        else:
             try:
-                current_shift_index = full_shifts.index(slot_shift)
-            except ValueError:
-                current_shift_index = 0
+                client = get_gspread_client()
+                sh = client.open_by_url(sheet_url)
+                
+                with st.spinner("מושך נתונים..."):
+                    w_df = get_df_from_sheet(sh, "workers")
+                    r_df = get_df_from_sheet(sh, "requirements")
+                    p_df = get_df_from_sheet(sh, "preferences")
 
-            if any(
-                abs(full_shifts.index(x) - current_shift_index) == 1
-                for x in worker_daily_shifts[w][slot_day]
-            ):
-                continue
+                res_df, _ = build_schedule(w_df, r_df, p_df, week_num)
+                
+                st.success("✅ השיבוץ הושלם!")
+                st.dataframe(res_df)
 
-            wds_key = (w, slot_day, slot_shift)
-            if wds_key in worker_day_shift_assigned:
-                continue
+                # עדכון הגיליון
+                new_sheet_name = f"שבוע {int(week_num)}"
+                try:
+                    ws = sh.worksheet(new_sheet_name)
+                    ws.clear()
+                except gspread.exceptions.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=new_sheet_name, rows="100", cols="20")
 
-            used_slots.add((slot_day, slot_shift, slot_i))
-            worker_day_shift_assigned.add(wds_key)
+                # כתיבה לענן
+                ws.update([res_df.columns.values.tolist()] + res_df.values.tolist())
+                st.balloons()
+                st.info(f"הנתונים נשמרו בטאב: {new_sheet_name}")
 
-            assignments.append({"שבוע": week_number, "יום": slot_day, "משמרת": slot_shift, "עובד": w})
-            worker_shift_count[w] += 1
-            worker_daily_shifts[w][slot_day].append(slot_shift)
-            assigned = True
-            break
-
-        if not assigned:
-            unassigned_pairs.add((slot_day, slot_shift))
-
-    df = pd.DataFrame(assignments)
-    if df.empty:
-        raise ValueError("לא נוצר אף שיבוץ. בדוק את הנתונים בגיליונות.")
-
-    df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
-    df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
-    df = df[["שבוע", "יום", "משמרת", "עובד"]]
-
-    return df, unassigned_pairs
-
-
-# =============================
-# 4) UI של האפליקציה אחרי התחברות
-# =============================
-st.title("🛠️ מערכת שיבוץ משמרות מעולה")
-
-uploaded_file = st.file_uploader("העלה קובץ אקסל קיים", type=["xlsx"])
-week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
-
-if uploaded_file is None:
-    st.info("העלה קובץ אקסל עם הגיליונות workers, requirements, preferences כדי להתחיל.")
-    st.stop()
-
-if st.button("🚀 בצע שיבוץ והוסף גיליון חדש לקובץ"):
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-
-        workers_df = pd.read_excel(xls, sheet_name="workers")
-        req_df = pd.read_excel(xls, sheet_name="requirements")
-        pref_df = pd.read_excel(xls, sheet_name="preferences")
-
-        schedule_df, unassigned_pairs = build_schedule(workers_df, req_df, pref_df, week_number)
-
-        schedule_df = schedule_df.reset_index(drop=True)
-        schedule_df.index += 1
-
-        st.success("✅ השיבוץ הוכן בהצלחה!")
-        st.dataframe(schedule_df, use_container_width=True)
-
-        if unassigned_pairs:
-            for d, s in unassigned_pairs:
-                st.warning(f"⚠️ לא שובץ אף אחד ל־{d} - {s}")
-
-        new_sheet_name = f"שבוע {int(week_number)}"
-        original_sheet_names = xls.sheet_names
-
-        if new_sheet_name in original_sheet_names:
-            st.warning(f"קיים כבר גיליון בשם '{new_sheet_name}'. הגיליון החדש ייקרא '{new_sheet_name} (2)'.")
-            new_sheet_name = f"{new_sheet_name} (2)"
-
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine="openpyxl") as writer:
-            for sheet in original_sheet_names:
-                df_old = pd.read_excel(xls, sheet_name=sheet)
-                df_old.to_excel(writer, sheet_name=sheet, index=False)
-
-            schedule_df.to_excel(writer, sheet_name=new_sheet_name, index=False)
-
-        output.seek(0)
-
-        st.download_button(
-            label="⬇️ הורד את הקובץ המעודכן (עם היסטוריית השבועות)",
-            data=output,
-            file_name=uploaded_file.name,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-    except Exception as e:
-        st.error(f"שגיאה במהלך השיבוץ: {e}")
+            except Exception as e:
+                st.error("שגיאה בתהליך:")
+                st.exception(e)
