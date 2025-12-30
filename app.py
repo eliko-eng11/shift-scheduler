@@ -11,7 +11,7 @@ import hmac
 # =============================
 # 1) הגדרות דף וחיבור לגוגל
 # =============================
-st.set_page_config(page_title="מערכת שיבוץ חכמה - Google Sheets", layout="wide")
+st.set_page_config(page_title="מערכת שיבוץ חכמה בדיקה - Google Sheets", layout="wide")
 
 def get_gspread_client():
     """חיבור מאובטח לגוגל שיטס באמצעות Secrets"""
@@ -219,3 +219,4 @@ if auth_gate():
             except Exception as e:
                 st.error("שגיאה בתהליך:")
                 st.exception(e)
+
