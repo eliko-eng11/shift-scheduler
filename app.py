@@ -45,7 +45,7 @@ st.markdown(
 # =============================
 def get_db_url() -> str:
     try:
-        return st.secrets["database"]["url"]
+        return st.secrets["db"]["url"]
     except Exception:
         st.error("❌ חסר Secrets: database.url (Streamlit Settings → Secrets)")
         st.stop()
@@ -612,3 +612,4 @@ elif page == "דאשבורד":
         (st.session_state.username,),
     )
     st.dataframe(pd.DataFrame(runs).assign(created_at=lambda x: x["created_at"].astype(str)), use_container_width=True)
+
