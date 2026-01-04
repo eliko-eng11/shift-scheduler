@@ -3,6 +3,18 @@ import pandas as pd
 import numpy as np
 from io import BytesIO
 import sqlite3, hashlib, os, hmac
+import streamlit as st
+from sqlalchemy import create_engine, text
+
+st.set_page_config(page_title="DB Test")
+
+engine = create_engine(st.secrets["db"]["url"])
+
+with engine.connect() as conn:
+    conn.execute(text("SELECT 1"))
+
+st.success("🔥 החיבור ל-Neon עובד!")
+
 
 # =============================
 # 1) חובה: page_config ראשון
@@ -386,3 +398,4 @@ if uploaded and st.button("🚀 בצע שיבוץ והורד קובץ חדש"):
 
     except Exception as e:
         st.exception(e)
+
