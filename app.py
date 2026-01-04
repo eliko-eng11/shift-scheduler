@@ -1,11 +1,12 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-import sqlite3, hashlib, os, hmac
-import psycopg2
-import psycopg2.extras
-import plotly.express as px
+import hashlib, os, hmac
+from datetime import datetime, timezone
+
+from sqlalchemy import create_engine, text
 
 # =============================
 # 1) חובה: page_config ראשון
@@ -13,197 +14,74 @@ import plotly.express as px
 st.set_page_config(page_title="מערכת שיבוץ משמרות", layout="wide")
 
 # =============================
-# RTL + UI (כתב מוגדל ומסודר)
+# 2) RTL + הגדלת כתב + טבלאות מיושרות
 # =============================
 st.markdown(
     """
     <style>
-      html, body, [class*="css"]  { direction: rtl; text-align: right; font-size: 18px; }
-      h1, h2, h3, h4, h5, h6 { direction: rtl; text-align: right; }
-      .stDataFrame, .stTable { direction: rtl; }
-      label, p, div { direction: rtl; }
-      section[data-testid="stSidebar"] { direction: rtl; }
+      html, body, [class*="css"]  { direction: rtl; text-align: right; }
       .block-container { padding-top: 1.2rem; }
+      h1, h2, h3, h4, h5, h6, p, div, span, label { direction: rtl; }
+      /* הגדלת פונט כללית */
+      html { font-size: 18px; }
+      /* dataframe */
+      .stDataFrame { direction: rtl; }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # =============================
-# DB (Neon / Postgres)
+# 3) DB (Neon/Postgres) + AUTH (Users בטבלה)
 # =============================
-def get_pg_conn():
-    if "db" not in st.secrets or "url" not in st.secrets["db"]:
-        st.error("חסר Secrets: db.url (Streamlit Settings → Secrets)")
-        st.stop()
-    return psycopg2.connect(st.secrets["db"]["url"])
+# שים ב-Secrets:
+# [db]
+# url = "postgresql://USER:PASSWORD@HOST/DB?sslmode=require"
+#
+# או לחלופין:
+# database_url = "..."
+#
+def get_db_url() -> str:
+    if "db" in st.secrets and "url" in st.secrets["db"]:
+        return st.secrets["db"]["url"]
+    if "database_url" in st.secrets:
+        return st.secrets["database_url"]
+    raise RuntimeError("חסר Secrets: db.url (Streamlit Settings -> Secrets)")
 
-def init_pg():
-    conn = get_pg_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS schedules (
-            id BIGSERIAL PRIMARY KEY,
-            username TEXT NOT NULL,
-            customer_name TEXT NOT NULL,
-            week INT NOT NULL,
-            day TEXT NOT NULL,
-            shift TEXT NOT NULL,
-            worker TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-    """)
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_schedules_user_week
-        ON schedules(username, customer_name, week);
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
+@st.cache_resource
+def get_engine():
+    url = get_db_url()
+    return create_engine(url, pool_pre_ping=True)
 
-def upsert_week_schedule(username: str, customer_name: str, week: int, df: pd.DataFrame):
-    """
-    דריסה לפי: username + customer_name + week
-    מוחק מה שהיה לשבוע הזה ומכניס חדש.
-    """
-    conn = get_pg_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        "DELETE FROM schedules WHERE username=%s AND customer_name=%s AND week=%s",
-        (username, customer_name, week)
-    )
-
-    rows = []
-    for _, r in df.iterrows():
-        rows.append((
-            username,
-            customer_name,
-            int(week),
-            str(r["יום"]),
-            str(r["משמרת"]),
-            str(r["עובד"])
-        ))
-
-    psycopg2.extras.execute_values(
-        cur,
-        """
-        INSERT INTO schedules (username, customer_name, week, day, shift, worker)
-        VALUES %s
-        """,
-        rows
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
-
-def list_weeks(username: str, customer_name: str | None = None):
-    conn = get_pg_conn()
-    cur = conn.cursor()
-    if customer_name:
-        cur.execute(
-            """
-            SELECT DISTINCT week
-            FROM schedules
-            WHERE username=%s AND customer_name=%s
-            ORDER BY week DESC
-            """,
-            (username, customer_name)
-        )
-    else:
-        cur.execute(
-            """
-            SELECT DISTINCT week
-            FROM schedules
-            WHERE username=%s
-            ORDER BY week DESC
-            """,
-            (username,)
-        )
-    weeks = [int(x[0]) for x in cur.fetchall()]
-    cur.close()
-    conn.close()
-    return weeks
-
-def list_customers(username: str):
-    conn = get_pg_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT DISTINCT customer_name
-        FROM schedules
-        WHERE username=%s
-        ORDER BY customer_name ASC
-        """,
-        (username,)
-    )
-    customers = [x[0] for x in cur.fetchall()]
-    cur.close()
-    conn.close()
-    return customers
-
-def load_week_schedule(username: str, customer_name: str, week: int) -> pd.DataFrame:
-    conn = get_pg_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT customer_name AS "לקוח",
-               week AS "שבוע",
-               day AS "יום",
-               shift AS "משמרת",
-               worker AS "עובד",
-               created_at AS "נוצר בתאריך"
-        FROM schedules
-        WHERE username=%s AND customer_name=%s AND week=%s
-        ORDER BY day, shift, worker
-        """,
-        (username, customer_name, week)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return pd.DataFrame(rows)
-
-def load_all_schedules(username: str) -> pd.DataFrame:
-    conn = get_pg_conn()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute(
-        """
-        SELECT customer_name AS "לקוח",
-               week AS "שבוע",
-               day AS "יום",
-               shift AS "משמרת",
-               worker AS "עובד",
-               created_at AS "נוצר בתאריך"
-        FROM schedules
-        WHERE username=%s
-        ORDER BY week DESC, day, shift, worker
-        """,
-        (username,)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return pd.DataFrame(rows)
-
-# =============================
-# AUTH (SQLite) - Login/Register
-# =============================
-DB_PATH = "users.db"
-
-def init_sqlite():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+def init_db():
+    eng = get_engine()
+    with eng.begin() as conn:
+        # users
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """))
+        # schedules
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS schedules (
+                id BIGSERIAL PRIMARY KEY,
+                customer TEXT NOT NULL,
+                week INT NOT NULL,
+                day TEXT NOT NULL,
+                shift TEXT NOT NULL,
+                worker TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+        """))
+        # index for faster filtering
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_schedules_customer_week
+            ON schedules(customer, week);
+        """))
 
 def hash_password(password: str, salt: str) -> str:
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
@@ -215,31 +93,35 @@ def create_user(username: str, password: str) -> bool:
         return False
     salt = os.urandom(16).hex()
     p_hash = hash_password(password, salt)
+
+    eng = get_engine()
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)", (username, p_hash, salt))
-        conn.commit()
-        conn.close()
+        with eng.begin() as conn:
+            conn.execute(
+                text("INSERT INTO users(username, password_hash, salt) VALUES (:u, :ph, :s)"),
+                {"u": username, "ph": p_hash, "s": salt},
+            )
         return True
-    except sqlite3.IntegrityError:
+    except Exception:
         return False
 
 def verify_user(username: str, password: str) -> bool:
     username = username.strip()
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
-    row = cur.fetchone()
-    conn.close()
+    eng = get_engine()
+    with eng.begin() as conn:
+        row = conn.execute(
+            text("SELECT password_hash, salt FROM users WHERE username = :u"),
+            {"u": username},
+        ).fetchone()
+
     if not row:
         return False
-    stored_hash, salt = row
+    stored_hash, salt = row[0], row[1]
     check_hash = hash_password(password, salt)
     return hmac.compare_digest(stored_hash, check_hash)
 
 def auth_gate():
-    init_sqlite()
+    init_db()
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.username = ""
@@ -252,7 +134,7 @@ def auth_gate():
             st.rerun()
         return
 
-    st.title("🔐 התחברות למערכת")
+    st.title("🔐 התחברות למערכת השיבוץ")
     tab_login, tab_register = st.tabs(["התחברות", "רישום"])
 
     with tab_login:
@@ -280,12 +162,14 @@ def auth_gate():
                 if ok:
                     st.success("נרשמת בהצלחה! עכשיו תתחבר בלשונית התחברות.")
                 else:
-                    st.error("שם המשתמש תפוס או נתונים לא תקינים")
+                    st.error("שם המשתמש תפוס או נתונים לא תקינים / בעיית DB")
 
     st.stop()
 
+auth_gate()
+
 # =============================
-# אלגוריתם שיבוץ (שלך)
+# 4) אלגוריתם שיבוץ
 # =============================
 def simple_assignment(cost_matrix):
     used_rows, used_cols = set(), set()
@@ -428,6 +312,7 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
         except ValueError:
             current_shift_index = 0
 
+        # לא משבצים משמרות צמודות באותו יום (לפי הרשימה)
         if any(abs(full_shifts.index(x) - current_shift_index) == 1 for x in worker_daily_shifts[worker][slot_day]):
             continue
 
@@ -473,13 +358,14 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     df = pd.DataFrame(assignments)
     if df.empty:
         raise ValueError("לא נוצר אף שיבוץ. בדוק נתונים ב־requirements/preferences.")
-    df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
+
+    df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x) if x in ordered_days else 999)
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
     return df, unassigned_pairs
 
 # =============================
-# Excel helpers
+# 5) Excel helpers
 # =============================
 def safe_new_sheet_name(existing_names, base_name: str) -> str:
     if base_name not in existing_names:
@@ -492,31 +378,114 @@ def safe_new_sheet_name(existing_names, base_name: str) -> str:
         i += 1
 
 # =============================
-# START APP
+# 6) UI helpers (יישור מרכז לחותמת זמן בכל הטבלאות)
 # =============================
-auth_gate()
-init_pg()
+def center_timestamp(df: pd.DataFrame) -> pd.io.formats.style.Styler:
+    # מרכז את "נוצר בתאריך" אם קיימת
+    sty = df.style
+    if "נוצר בתאריך" in df.columns:
+        sty = sty.set_properties(subset=["נוצר בתאריך"], **{"text-align": "center"})
+    # כותרות מרכז
+    sty = sty.set_table_styles([{"selector": "th", "props": [("text-align", "center")]}])
+    return sty
 
-username = st.session_state.username
+# =============================
+# 7) פעולות DB לשיבוצים
+# =============================
+def upsert_week_customer(customer: str, week: int, schedule_df: pd.DataFrame):
+    """דריסה לפי (customer, week): מוחק ואז מכניס מחדש"""
+    eng = get_engine()
+    created_at = datetime.now(timezone.utc)
 
+    with eng.begin() as conn:
+        conn.execute(
+            text("DELETE FROM schedules WHERE customer = :c AND week = :w"),
+            {"c": customer, "w": int(week)},
+        )
+
+        # insert bulk
+        rows = []
+        for _, r in schedule_df.iterrows():
+            rows.append({
+                "customer": customer,
+                "week": int(r["שבוע"]),
+                "day": str(r["יום"]),
+                "shift": str(r["משמרת"]),
+                "worker": str(r["עובד"]),
+                "created_at": created_at,
+            })
+
+        conn.execute(
+            text("""
+                INSERT INTO schedules(customer, week, day, shift, worker, created_at)
+                VALUES (:customer, :week, :day, :shift, :worker, :created_at)
+            """),
+            rows
+        )
+
+def load_schedules(customer: str | None = None, week: int | None = None) -> pd.DataFrame:
+    eng = get_engine()
+    q = "SELECT customer AS לקוח, week AS שבוע, day AS יום, shift AS משמרת, worker AS עובד, created_at AS \"נוצר בתאריך\" FROM schedules"
+    conds = []
+    params = {}
+    if customer:
+        conds.append("customer = :c")
+        params["c"] = customer
+    if week is not None:
+        conds.append("week = :w")
+        params["w"] = int(week)
+    if conds:
+        q += " WHERE " + " AND ".join(conds)
+    q += " ORDER BY week DESC, day ASC, shift ASC, worker ASC"
+
+    with eng.begin() as conn:
+        df = pd.read_sql(text(q), conn, params=params)
+    return df
+
+def list_customers() -> list[str]:
+    eng = get_engine()
+    with eng.begin() as conn:
+        rows = conn.execute(text("SELECT DISTINCT customer FROM schedules ORDER BY customer")).fetchall()
+    return [r[0] for r in rows]
+
+def list_weeks(customer: str | None = None) -> list[int]:
+    eng = get_engine()
+    if customer:
+        with eng.begin() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT week FROM schedules WHERE customer = :c ORDER BY week DESC"),
+                {"c": customer},
+            ).fetchall()
+    else:
+        with eng.begin() as conn:
+            rows = conn.execute(text("SELECT DISTINCT week FROM schedules ORDER BY week DESC")).fetchall()
+    return [int(r[0]) for r in rows]
+
+# =============================
+# 8) ניווט
+# =============================
 st.sidebar.title("תפריט")
-page = st.sidebar.radio("ניווט", ["שיבוץ", "דשבורד", "מערכת מידע"], index=0)
+page = st.sidebar.radio("ניווט", ["שיבוץ", "מערכת מידע", "דשבורד"], index=0)
 
-# -----------------------------
-# PAGE: שיבוץ
-# -----------------------------
+# =============================
+# 9) שיבוץ (Excel -> Excel + שמירה ל-DB)
+# =============================
 if page == "שיבוץ":
     st.title("🧠 שיבוץ משמרות (Excel)")
 
-    customer_name = st.text_input("שם הלקוח", placeholder="לדוגמה: מסעדת הבוקר / לקוח A")
-    uploaded = st.file_uploader("העלה קובץ Excel (xlsx) עם טאבים: workers / requirements / preferences", type=["xlsx"])
-    week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        customer = st.text_input("שם הלקוח (יישמר ברשומות)", placeholder="לדוגמה: מסעדת דניאלה")
+    with c2:
+        week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
+    with c3:
+        save_to_db = st.toggle("שמור למערכת מידע (DB)", value=True)
 
-    st.markdown("💡 השמירה למערכת המידע תדרוס נתונים קיימים אם תעלה שוב אותו שבוע לאותו לקוח.")
+    uploaded = st.file_uploader("העלה קובץ Excel (xlsx) עם טאבים: workers / requirements / preferences", type=["xlsx"])
 
     if uploaded and st.button("🚀 בצע שיבוץ"):
-        if not customer_name.strip():
-            st.error("חייב למלא שם לקוח לפני שיבוץ.")
+        if not customer.strip():
+            st.error("חובה למלא שם לקוח לפני שמבצעים שיבוץ.")
             st.stop()
 
         try:
@@ -535,15 +504,7 @@ if page == "שיבוץ":
 
             schedule_df, unassigned = build_schedule(workers_df, req_df, pref_df, int(week_number))
 
-            st.success("✅ השיבוץ מוכן!")
-            st.dataframe(schedule_df, use_container_width=True)
-
-            if unassigned:
-                st.warning("⚠️ משמרות שלא שובצו:")
-                for d, s in sorted(list(unassigned)):
-                    st.write(f"- {d} / {s}")
-
-            # כתיבה לאקסל חדש (מוריד)
+            # --- כתיבה לקובץ חדש (כל הגליונות + גליון שבוע)
             out = BytesIO()
             base_new_name = f"שבוע {int(week_number)}"
             new_sheet_name = safe_new_sheet_name(sheet_names, base_new_name)
@@ -556,144 +517,114 @@ if page == "שיבוץ":
 
             out.seek(0)
 
+            # --- שמירה ל-DB (דריסה לפי שבוע+לקוח)
+            if save_to_db:
+                upsert_week_customer(customer.strip(), int(week_number), schedule_df)
+
+            st.success(f"✅ מוכן! נוסף גליון חדש: {new_sheet_name}")
+            st.dataframe(schedule_df, use_container_width=True)
+
+            if unassigned:
+                st.warning("⚠️ משמרות שלא שובצו:")
+                for d, s in sorted(list(unassigned)):
+                    st.write(f"- {d} / {s}")
+
             st.download_button(
-                "⬇️ הורד קובץ אקסל עם גליון חדש",
+                "⬇️ הורד קובץ אקסל חדש",
                 data=out.getvalue(),
-                file_name=f"shift_schedule_week_{int(week_number)}.xlsx",
+                file_name=f"{customer.strip()}_week_{int(week_number)}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
-            # שמירה ל-DB (דריסה לפי שבוע + לקוח + משתמש)
-            upsert_week_schedule(username, customer_name.strip(), int(week_number), schedule_df)
-            st.success(f"✅ נשמר למערכת המידע! (לקוח: {customer_name.strip()} | שבוע: {int(week_number)})")
-
         except Exception as e:
+            st.error("שגיאה בתהליך:")
             st.exception(e)
 
-# -----------------------------
-# PAGE: דשבורד
-# -----------------------------
+# =============================
+# 10) מערכת מידע (טבלה מלאה + פילטרים)
+# =============================
+elif page == "מערכת מידע":
+    st.title("📚 מערכת מידע (רשומות שיבוץ)")
+
+    customers = list_customers()
+    weeks_all = list_weeks()
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        customer_filter = st.selectbox("בחר לקוח (אופציונלי)", ["הכול"] + customers, index=0)
+    with c2:
+        week_filter = st.selectbox("בחר שבוע (אופציונלי)", ["הכול"] + [str(w) for w in weeks_all], index=0)
+
+    customer_val = None if customer_filter == "הכול" else customer_filter
+    week_val = None if week_filter == "הכול" else int(week_filter)
+
+    df = load_schedules(customer=customer_val, week=week_val)
+
+    if df.empty:
+        st.info("אין נתונים להצגה לפי הפילטרים שבחרת.")
+    else:
+        st.subheader("טבלת שיבוצים מהמערכת")
+        st.dataframe(center_timestamp(df), use_container_width=True)
+
+# =============================
+# 11) דשבורד (שבוע נבחר + כל השבועות)
+# =============================
 elif page == "דשבורד":
     st.title("דשבורד")
 
-    customers = list_customers(username)
+    customers = list_customers()
     if not customers:
-        st.info("אין עדיין נתונים במערכת המידע. בצע שיבוץ ושמור למערכת.")
+        st.info("אין נתונים במערכת עדיין. תעלה שיבוץ ותשמור ל-DB.")
         st.stop()
 
-    customer_pick = st.selectbox("בחר לקוח", customers, index=0)
-
-    tab_week, tab_all = st.tabs(["שבוע ספציפי", "כל השבועות"])
-
-    # ===== TAB 1: שבוע ספציפי =====
-    with tab_week:
-        weeks = list_weeks(username, customer_pick)
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        customer = st.selectbox("בחר לקוח", customers, index=0)
+    with c2:
+        weeks = list_weeks(customer)
         if not weeks:
             st.info("אין שבועות ללקוח הזה עדיין.")
             st.stop()
+        week = st.selectbox("בחר שבוע להצגה", weeks, index=0)
 
-        week_selected = st.selectbox("בחר שבוע להצגה", options=weeks, index=0)
+    # --- נתוני שבוע נבחר
+    df_week = load_schedules(customer=customer, week=int(week))
+    st.subheader("טבלת שיבוצים מהמערכת")
+    st.dataframe(center_timestamp(df_week), use_container_width=True)
 
-        df_week = load_week_schedule(username, customer_pick, week_selected)
-        if df_week.empty:
-            st.warning("לא נמצאו נתונים לשבוע הזה.")
-            st.stop()
+    # תרשים: כמה עבד כל עובד בחלוקה לימים (שבוע נבחר)
+    st.subheader("כמה עבד כל עובד בחלוקה לימים (שבוע נבחר)")
+    pivot_week = (
+        df_week
+        .groupby(["עובד", "יום"])
+        .size()
+        .reset_index(name="כמות משמרות")
+        .pivot(index="עובד", columns="יום", values="כמות משמרות")
+        .fillna(0)
+    )
+    st.bar_chart(pivot_week)
 
-        st.subheader("מערכת מידע - שיבוצים לשבוע הנבחר")
-        st.dataframe(df_week, use_container_width=True)
+    st.divider()
 
-        st.subheader("כמה עבד כל עובד בחלוקה לימים (שבוע נבחר)")
-        chart_df = (
-            df_week.groupby(["עובד", "יום"])
-            .size()
-            .reset_index(name="כמות משמרות")
-        )
+    # --- כל השבועות (ללקוח): פילוח עובד X יום לאורך זמן
+    st.subheader("פילוח לאורך כלל השבועות: כמה משמרות עובד עושה בכל יום")
+    df_all = load_schedules(customer=customer, week=None)
 
-        fig = px.bar(
-            chart_df,
-            x="עובד",
-            y="כמות משמרות",
-            color="יום",
-            barmode="stack",
-            title=f"לקוח: {customer_pick} | שבוע {week_selected} — כמות משמרות לכל עובד (לפי ימים)"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # ===== TAB 2: כל השבועות =====
-    with tab_all:
-        df_all = load_all_schedules(username)
-        df_all = df_all[df_all["לקוח"] == customer_pick]
-
-        if df_all.empty:
-            st.info("אין נתונים ללקוח הזה עדיין.")
-            st.stop()
-
-        st.subheader("פילטר טווח שבועות (אופציונלי)")
-        weeks_all = sorted(df_all["שבוע"].dropna().unique().tolist())
-        min_w, max_w = int(min(weeks_all)), int(max(weeks_all))
-        week_range = st.slider("טווח שבועות", min_value=min_w, max_value=max_w, value=(min_w, max_w))
-
-        df_f = df_all[(df_all["שבוע"] >= week_range[0]) & (df_all["שבוע"] <= week_range[1])]
-
-        st.subheader("כמה משמרות עבד כל עובד לפי יום — לאורך כל השבועות")
-        agg = (
-            df_f.groupby(["עובד", "יום"])
-            .size()
-            .reset_index(name="כמות משמרות")
-        )
-
-        fig2 = px.bar(
-            agg,
-            x="עובד",
-            y="כמות משמרות",
-            color="יום",
-            barmode="stack",
-            title=f"לקוח: {customer_pick} — סה״כ כמות משמרות לכל עובד לפי ימים (כל השבועות / טווח מסונן)"
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-
-        st.subheader("טבלת סיכום (Pivot) — עובד מול ימים")
-        pivot = agg.pivot_table(index="עובד", columns="יום", values="כמות משמרות", fill_value=0, aggfunc="sum")
-        st.dataframe(pivot, use_container_width=True)
-
-# -----------------------------
-# PAGE: מערכת מידע
-# -----------------------------
-elif page == "מערכת מידע":
-    st.title("מערכת מידע")
-
-    df_all = load_all_schedules(username)
     if df_all.empty:
-        st.info("אין נתונים במערכת המידע עדיין.")
+        st.info("אין נתונים להצגה.")
         st.stop()
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        customers = ["הכול"] + sorted(df_all["לקוח"].dropna().unique().tolist())
-        customer_pick = st.selectbox("לקוח", customers, index=0)
-    with col2:
-        weeks_all = sorted(df_all["שבוע"].dropna().unique().tolist())
-        week_pick = st.selectbox("שבוע", ["הכול"] + [str(w) for w in weeks_all], index=0)
-    with col3:
-        worker_pick = st.text_input("חיפוש עובד", placeholder="הקלד שם עובד...")
-
-    df_f = df_all.copy()
-
-    if customer_pick != "הכול":
-        df_f = df_f[df_f["לקוח"] == customer_pick]
-
-    if week_pick != "הכול":
-        df_f = df_f[df_f["שבוע"] == int(week_pick)]
-
-    if worker_pick.strip():
-        df_f = df_f[df_f["עובד"].astype(str).str.contains(worker_pick.strip(), case=False, na=False)]
-
-    st.subheader("טבלת שיבוצים מהמערכת")
-    st.dataframe(df_f, use_container_width=True)
-
-    st.download_button(
-        "הורד CSV",
-        data=df_f.to_csv(index=False).encode("utf-8-sig"),
-        file_name="system_schedules.csv",
-        mime="text/csv"
+    pivot_all = (
+        df_all
+        .groupby(["עובד", "יום"])
+        .size()
+        .reset_index(name="כמות משמרות")
+        .pivot(index="עובד", columns="יום", values="כמות משמרות")
+        .fillna(0)
+        .sort_index()
     )
+    st.bar_chart(pivot_all)
+
+    st.subheader("טבלת סיכום (כל השבועות)")
+    pivot_all_tbl = pivot_all.reset_index()
+    st.dataframe(center_timestamp(pivot_all_tbl), use_container_width=True)
