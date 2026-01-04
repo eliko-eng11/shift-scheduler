@@ -4,16 +4,20 @@ import numpy as np
 from io import BytesIO
 import sqlite3, hashlib, os, hmac
 import streamlit as st
-from sqlalchemy import create_engine, text
+import streamlit as st
+import psycopg2
 
 st.set_page_config(page_title="DB Test")
 
-engine = create_engine(st.secrets["db"]["url"])
-
-with engine.connect() as conn:
-    conn.execute(text("SELECT 1"))
+conn = psycopg2.connect(st.secrets["db"]["url"])
+cur = conn.cursor()
+cur.execute("SELECT 1;")
+cur.fetchone()
+cur.close()
+conn.close()
 
 st.success("🔥 החיבור ל-Neon עובד!")
+")
 
 
 # =============================
@@ -398,4 +402,5 @@ if uploaded and st.button("🚀 בצע שיבוץ והורד קובץ חדש"):
 
     except Exception as e:
         st.exception(e)
+
 
