@@ -8,3 +8,6 @@ matplotlib==3.9.2
 plotly==5.24.1
 gspread
 google-auth
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.9
+
