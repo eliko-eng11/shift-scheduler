@@ -2,157 +2,111 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-import hashlib, os, hmac
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import uuid
-from datetime import datetime, timezone
+import sqlite3, hashlib, os, hmac
+from datetime import datetime
+
+# DB (Neon/Postgres)
+from sqlalchemy import create_engine, text
+
+# Charts
+import plotly.express as px
 
 # =============================
-# 1) Page config (MUST be first)
+# 1) חובה: page_config ראשון
 # =============================
-st.set_page_config(page_title="מערכת שיבוץ משמרות", layout="wide")
+st.set_page_config(page_title="שיבוץ משמרות (Excel) + DB", layout="wide")
 
 # =============================
-# 2) RTL + Professional UI CSS
+# 2) סטייל: RTL + הגדלת כתב
 # =============================
 st.markdown(
     """
     <style>
-      html, body, [class*="css"]  {
-        direction: rtl;
-        text-align: right;
-      }
+      html, body, [class*="css"]  { direction: rtl; text-align: right; }
       .stApp { direction: rtl; }
-      h1, h2, h3, h4, h5, h6, p, div, label, span { direction: rtl; text-align: right; }
-      .block-container { padding-top: 2rem; }
-      .stDataFrame, .stTable { direction: rtl; }
-      /* nicer cards */
-      .card {
-        background: rgba(255,255,255,0.06);
-        border: 1px solid rgba(255,255,255,0.10);
-        border-radius: 14px;
-        padding: 14px 16px;
-      }
-      .muted { opacity: 0.8; font-size: 0.92rem; }
+      /* הגדלת כתב כללית */
+      p, li, label, span, div { font-size: 1.05rem !important; }
+      /* כותרות קצת יותר גדולות */
+      h1 { font-size: 2.1rem !important; }
+      h2 { font-size: 1.7rem !important; }
+      h3 { font-size: 1.35rem !important; }
+      /* כפתורים קצת יותר גדולים */
+      .stButton button { font-size: 1.05rem !important; padding: 0.6rem 1rem; }
+      /* טבלאות */
+      .stDataFrame { font-size: 1.0rem !important; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # =============================
-# 3) DB (Neon/Postgres)
+# 3) AUTH (SQLite) - Login/Register
 # =============================
-def get_db_url() -> str:
-    try:
-        return st.secrets["db"]["url"]
-    except Exception:
-        st.error("❌ חסר Secrets: database.url (Streamlit Settings → Secrets)")
-        st.stop()
+DB_PATH = "users.db"
 
-def db_connect():
-    return psycopg2.connect(get_db_url(), cursor_factory=RealDictCursor)
+def init_auth_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-def db_init():
-    """Create tables if not exist."""
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    username TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    salt TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS schedule_runs (
-                    run_id UUID PRIMARY KEY,
-                    created_by TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
-                    week INTEGER NOT NULL,
-                    source_filename TEXT,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS schedule_rows (
-                    id BIGSERIAL PRIMARY KEY,
-                    run_id UUID NOT NULL REFERENCES schedule_runs(run_id) ON DELETE CASCADE,
-                    week INTEGER NOT NULL,
-                    day TEXT NOT NULL,
-                    shift TEXT NOT NULL,
-                    worker TEXT NOT NULL
-                );
-            """)
-        conn.commit()
-
-db_init()
-
-def db_fetch_all(query: str, params=None):
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, params or ())
-            return cur.fetchall()
-
-def db_execute(query: str, params=None):
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, params or ())
-        conn.commit()
-
-# =============================
-# 4) Auth helpers (Postgres)
-# =============================
 def hash_password(password: str, salt: str) -> str:
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return dk.hex()
 
 def create_user(username: str, password: str) -> bool:
-    username = (username or "").strip()
+    username = username.strip()
     if not username or not password:
         return False
-
     salt = os.urandom(16).hex()
     p_hash = hash_password(password, salt)
-
     try:
-        db_execute(
-            "INSERT INTO users(username, password_hash, salt) VALUES (%s, %s, %s)",
-            (username, p_hash, salt),
-        )
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO users(username, password_hash, salt) VALUES (?, ?, ?)", (username, p_hash, salt))
+        conn.commit()
+        conn.close()
         return True
-    except Exception:
+    except sqlite3.IntegrityError:
         return False
 
 def verify_user(username: str, password: str) -> bool:
-    username = (username or "").strip()
-    rows = db_fetch_all(
-        "SELECT password_hash, salt FROM users WHERE username = %s",
-        (username,),
-    )
-    if not rows:
+    username = username.strip()
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash, salt FROM users WHERE username = ?", (username,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
         return False
-    stored_hash = rows[0]["password_hash"]
-    salt = rows[0]["salt"]
+    stored_hash, salt = row
     check_hash = hash_password(password, salt)
     return hmac.compare_digest(stored_hash, check_hash)
 
 def auth_gate():
+    init_auth_db()
+
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.username = ""
 
     if st.session_state.logged_in:
-        st.sidebar.markdown(f"<div class='card'>✅ מחובר כ: <b>{st.session_state.username}</b></div>", unsafe_allow_html=True)
+        st.sidebar.success(f"מחובר כ: {st.session_state.username}")
         if st.sidebar.button("התנתקות"):
             st.session_state.logged_in = False
             st.session_state.username = ""
             st.rerun()
         return
 
-    st.title("🔐 התחברות למערכת השיבוץ")
-    st.markdown("<div class='muted'>המערכת שומרת משתמשים והיסטוריית שיבוצים במסד נתונים חיצוני (Postgres).</div>", unsafe_allow_html=True)
-
+    st.title("התחברות למערכת השיבוץ")
     tab_login, tab_register = st.tabs(["התחברות", "רישום"])
 
     with tab_login:
@@ -187,7 +141,106 @@ def auth_gate():
 auth_gate()
 
 # =============================
-# 5) Scheduling algorithm (your logic)
+# 4) DB (Neon/Postgres) חיבור + טבלה למערכת מידע
+# =============================
+def get_engine():
+    # חייב להיות ב-Secrets:
+    # [db]
+    # url = "postgresql://..."
+    db_url = st.secrets["db"]["url"]
+    return create_engine(db_url, pool_pre_ping=True)
+
+engine = get_engine()
+
+def init_info_db():
+    # טבלת "מערכת מידע" לשיבוצים
+    ddl = """
+    CREATE TABLE IF NOT EXISTS schedules (
+        id BIGSERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        customer_name TEXT NOT NULL,
+        week INT NOT NULL,
+        day TEXT NOT NULL,
+        shift TEXT NOT NULL,
+        worker TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_schedules_user_week ON schedules(username, week);
+    """
+    with engine.begin() as conn:
+        # אפשר להריץ כמה statements בבת אחת ב-Postgres
+        for stmt in ddl.strip().split(";"):
+            s = stmt.strip()
+            if s:
+                conn.execute(text(s))
+
+init_info_db()
+
+def overwrite_week_schedule(username: str, customer_name: str, week: int, schedule_df: pd.DataFrame):
+    """
+    דריסה לפי שבוע (עבור המשתמש).
+    אם כבר יש נתונים על אותו שבוע -> מוחקים ואז מכניסים מחדש.
+    """
+    if schedule_df.empty:
+        return
+
+    rows = []
+    now = datetime.utcnow().isoformat()
+    for _, r in schedule_df.iterrows():
+        rows.append({
+            "username": username,
+            "customer_name": customer_name,
+            "week": int(week),
+            "day": str(r["יום"]),
+            "shift": str(r["משמרת"]),
+            "worker": str(r["עובד"]),
+            "created_at": now
+        })
+
+    with engine.begin() as conn:
+        # 1) מוחקים הכל לשבוע הזה (למשתמש הזה) -> זה ה"דריסה"
+        conn.execute(
+            text("DELETE FROM schedules WHERE username = :u AND week = :w"),
+            {"u": username, "w": int(week)}
+        )
+        # 2) מכניסים מחדש
+        conn.execute(
+            text("""
+                INSERT INTO schedules (username, customer_name, week, day, shift, worker, created_at)
+                VALUES (:username, :customer_name, :week, :day, :shift, :worker, :created_at)
+            """),
+            rows
+        )
+
+def load_week_schedule(username: str, week: int) -> pd.DataFrame:
+    with engine.connect() as conn:
+        res = conn.execute(
+            text("""
+                SELECT customer_name AS "לקוח",
+                       week AS "שבוע",
+                       day AS "יום",
+                       shift AS "משמרת",
+                       worker AS "עובד",
+                       created_at AS "נוצר בתאריך"
+                FROM schedules
+                WHERE username = :u AND week = :w
+                ORDER BY day, shift, worker
+            """),
+            {"u": username, "w": int(week)}
+        )
+        rows = res.mappings().all()
+    return pd.DataFrame(rows)
+
+def list_weeks(username: str):
+    with engine.connect() as conn:
+        res = conn.execute(
+            text("SELECT DISTINCT week FROM schedules WHERE username = :u ORDER BY week DESC"),
+            {"u": username}
+        )
+        return [int(r[0]) for r in res.fetchall()]
+
+# =============================
+# 5) אלגוריתם שיבוץ (כמו שלך)
 # =============================
 def simple_assignment(cost_matrix):
     used_rows, used_cols = set(), set()
@@ -375,14 +428,13 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     df = pd.DataFrame(assignments)
     if df.empty:
         raise ValueError("לא נוצר אף שיבוץ. בדוק נתונים ב־requirements/preferences.")
-
     df["יום_מספר"] = df["יום"].apply(lambda x: ordered_days.index(x))
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
     return df, unassigned_pairs
 
 # =============================
-# 6) Excel helper
+# 6) Excel helpers - שימור היסטוריה
 # =============================
 def safe_new_sheet_name(existing_names, base_name: str) -> str:
     if base_name not in existing_names:
@@ -395,63 +447,34 @@ def safe_new_sheet_name(existing_names, base_name: str) -> str:
         i += 1
 
 # =============================
-# 7) Save schedule to DB
+# 7) UI: ניווט + דפים
 # =============================
-def save_schedule_to_db(schedule_df: pd.DataFrame, week_number: int, source_filename: str, created_by: str) -> uuid.UUID:
-    run_id = uuid.uuid4()
-    with db_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO schedule_runs(run_id, created_by, week, source_filename) VALUES (%s, %s, %s, %s)",
-                (str(run_id), created_by, int(week_number), source_filename),
-            )
+username = st.session_state.username
 
-            rows = []
-            for _, r in schedule_df.iterrows():
-                rows.append((str(run_id), int(r["שבוע"]), str(r["יום"]), str(r["משמרת"]), str(r["עובד"])))
+st.sidebar.title("תפריט")
+page = st.sidebar.radio("ניווט", ["שיבוץ", "דשבורד"], index=0)
 
-            cur.executemany(
-                "INSERT INTO schedule_rows(run_id, week, day, shift, worker) VALUES (%s, %s, %s, %s, %s)",
-                rows,
-            )
-        conn.commit()
-    return run_id
+# -----------------------------
+# PAGE: שיבוץ
+# -----------------------------
+if page == "שיבוץ":
+    st.title("מערכת שיבוץ משמרות (Excel)")
 
-def load_run_rows(run_id: str) -> pd.DataFrame:
-    rows = db_fetch_all(
-        "SELECT week AS שבוע, day AS יום, shift AS משמרת, worker AS עובד FROM schedule_rows WHERE run_id = %s ORDER BY id",
-        (run_id,),
-    )
-    return pd.DataFrame(rows)
-
-# =============================
-# 8) Layout / Navigation
-# =============================
-st.sidebar.markdown("<div class='card'><b>ניווט</b><div class='muted'>בחר מה לעשות</div></div>", unsafe_allow_html=True)
-page = st.sidebar.radio(
-    "תפריט",
-    ["שיבוץ מאקסל", "היסטוריה", "דאשבורד"],
-    label_visibility="collapsed",
-)
-
-# =============================
-# 9) Page: Excel → Schedule
-# =============================
-if page == "שיבוץ מאקסל":
-    st.title("🧠 מערכת שיבוץ משמרות (Excel)")
-
-    st.markdown(
-        "<div class='card'>"
-        "<b>איך זה עובד?</b><br>"
-        "<span class='muted'>מעלים קובץ Excel עם טאבים: workers / requirements / preferences → המערכת מייצרת שיבוץ → שומרת ל-DB → ומחזירה קובץ חדש עם גליון נוסף.</span>"
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-    uploaded = st.file_uploader("העלה קובץ Excel (xlsx)", type=["xlsx"])
+    customer_name = st.text_input("שם הלקוח", placeholder="לדוגמה: לקוח א'")
+    uploaded = st.file_uploader("העלה קובץ Excel (xlsx) עם טאבים: workers / requirements / preferences", type=["xlsx"])
     week_number = st.number_input("מספר שבוע לשיבוץ", min_value=1, step=1, value=1)
 
-    if uploaded and st.button("🚀 בצע שיבוץ"):
+    colA, colB = st.columns([1, 2], vertical_alignment="center")
+    with colA:
+        run_btn = st.button("בצע שיבוץ ושמור למערכת מידע")
+    with colB:
+        st.caption("הערה: שמירה למערכת מידע *תדרוס* נתונים קיימים לאותו שבוע.")
+
+    if uploaded and run_btn:
+        if not customer_name.strip():
+            st.error("חובה למלא שם לקוח לפני שמירה.")
+            st.stop()
+
         try:
             xls = pd.ExcelFile(uploaded)
             sheet_names = xls.sheet_names
@@ -463,153 +486,95 @@ if page == "שיבוץ מאקסל":
                 st.stop()
 
             workers_df = pd.read_excel(uploaded, sheet_name=lower_map["workers"])
-            req_df = pd.read_excel(uploaded, sheet_name=lower_map["requirements"])
-            pref_df = pd.read_excel(uploaded, sheet_name=lower_map["preferences"])
+            req_df     = pd.read_excel(uploaded, sheet_name=lower_map["requirements"])
+            pref_df    = pd.read_excel(uploaded, sheet_name=lower_map["preferences"])
 
             schedule_df, unassigned = build_schedule(workers_df, req_df, pref_df, int(week_number))
 
-            # Save to DB
-            run_id = save_schedule_to_db(
-                schedule_df=schedule_df,
-                week_number=int(week_number),
-                source_filename=getattr(uploaded, "name", None),
-                created_by=st.session_state.username
+            # להוסיף עמודת לקוח לתצוגה/אקסל (לא חובה אבל ביקשת "להכניס לרשומות")
+            schedule_df_display = schedule_df.copy()
+            schedule_df_display.insert(0, "לקוח", customer_name.strip())
+
+            # 1) שמירה ל-DB (דריסה לפי שבוע)
+            overwrite_week_schedule(
+                username=username,
+                customer_name=customer_name.strip(),
+                week=int(week_number),
+                schedule_df=schedule_df
             )
 
-            # Build output Excel with original sheets + new schedule sheet
-            out = BytesIO()
-            base_new_name = f"שבוע {int(week_number)}"
-            new_sheet_name = safe_new_sheet_name(sheet_names, base_new_name)
-
-            with pd.ExcelWriter(out, engine="openpyxl") as writer:
-                for s in sheet_names:
-                    df_s = pd.read_excel(uploaded, sheet_name=s)
-                    df_s.to_excel(writer, sheet_name=s, index=False)
-                schedule_df.to_excel(writer, sheet_name=new_sheet_name, index=False)
-
-            out.seek(0)
-
-            st.success(f"✅ שיבוץ הוכן ונשמר למסד נתונים! מזהה ריצה: {run_id}")
-            st.dataframe(schedule_df, use_container_width=True)
+            st.success(f"✅ השיבוץ נשמר למערכת מידע (שבוע {int(week_number)}) — אם היה קיים, הוא נדרס.")
+            st.dataframe(schedule_df_display, use_container_width=True)
 
             if unassigned:
                 st.warning("⚠️ משמרות שלא שובצו:")
                 for d, s in sorted(list(unassigned)):
                     st.write(f"- {d} / {s}")
 
+            # 2) יצוא לקובץ אקסל: כל הגליונות המקוריים + גליון שבוע חדש
+            out = BytesIO()
+            base_new_name = f"שבוע {int(week_number)}"
+            new_sheet_name = safe_new_sheet_name(sheet_names, base_new_name)
+
+            with pd.ExcelWriter(out, engine="openpyxl") as writer:
+                # שומרים את כל הגליונות המקוריים
+                for s in sheet_names:
+                    df_s = pd.read_excel(uploaded, sheet_name=s)
+                    df_s.to_excel(writer, sheet_name=s, index=False)
+
+                # מוסיפים גליון שיבוץ חדש עם "לקוח"
+                schedule_df_display.to_excel(writer, sheet_name=new_sheet_name, index=False)
+
+            out.seek(0)
+
             st.download_button(
-                "⬇️ הורד קובץ אקסל חדש",
+                "הורד קובץ אקסל חדש",
                 data=out.getvalue(),
                 file_name=f"shift_schedule_week_{int(week_number)}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
         except Exception as e:
-            st.error("❌ שגיאה בתהליך השיבוץ")
+            st.error("❌ שגיאה בתהליך")
             st.exception(e)
 
-# =============================
-# 10) Page: History
-# =============================
-elif page == "היסטוריה":
-    st.title("🗂️ היסטוריית שיבוצים")
+# -----------------------------
+# PAGE: דשבורד
+# -----------------------------
+else:
+    st.title("דשבורד")
 
-    runs = db_fetch_all(
-        """
-        SELECT run_id, week, source_filename, created_at
-        FROM schedule_runs
-        WHERE created_by = %s
-        ORDER BY created_at DESC
-        LIMIT 50
-        """,
-        (st.session_state.username,),
-    )
-
-    if not runs:
-        st.info("אין עדיין ריצות שיבוץ בחשבון הזה. עבור לעמוד 'שיבוץ מאקסל' והריץ פעם ראשונה.")
+    weeks = list_weeks(username)
+    if not weeks:
+        st.info("אין עדיין נתונים במערכת המידע. בצע שיבוץ ושמור למערכת.")
         st.stop()
 
-    runs_df = pd.DataFrame(runs)
-    runs_df["created_at"] = runs_df["created_at"].astype(str)
+    week_selected = st.selectbox("בחר שבוע להצגה", options=weeks, index=0)
 
-    st.markdown("<div class='card'><b>הריצות האחרונות שלך</b></div>", unsafe_allow_html=True)
-    st.dataframe(runs_df.rename(columns={
-        "run_id": "מזהה ריצה",
-        "week": "שבוע",
-        "source_filename": "קובץ מקור",
-        "created_at": "נוצר בתאריך",
-    }), use_container_width=True)
-
-    run_ids = [str(r["run_id"]) for r in runs]
-    selected = st.selectbox("בחר ריצה להצגה", run_ids)
-
-    if selected:
-        df_rows = load_run_rows(selected)
-        st.markdown("<div class='card'><b>תוצאות שיבוץ</b></div>", unsafe_allow_html=True)
-        st.dataframe(df_rows, use_container_width=True)
-
-        # download this run as excel
-        out = BytesIO()
-        with pd.ExcelWriter(out, engine="openpyxl") as writer:
-            df_rows.to_excel(writer, sheet_name="Schedule", index=False)
-        out.seek(0)
-
-        st.download_button(
-            "⬇️ הורד את הריצה הזו כ-Excel",
-            data=out.getvalue(),
-            file_name=f"schedule_run_{selected}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-# =============================
-# 11) Page: Dashboard
-# =============================
-elif page == "דאשבורד":
-    st.title("📊 דאשבורד")
-
-    # Pull recent rows for analysis
-    rows = db_fetch_all(
-        """
-        SELECT sr.week, sr.created_at, s.day, s.shift, s.worker
-        FROM schedule_rows s
-        JOIN schedule_runs sr ON sr.run_id = s.run_id
-        WHERE sr.created_by = %s
-        ORDER BY sr.created_at DESC
-        LIMIT 5000
-        """,
-        (st.session_state.username,),
-    )
-
-    if not rows:
-        st.info("אין מספיק נתונים לדאשבורד עדיין. תבצע שיבוץ מאקסל קודם.")
+    df_week = load_week_schedule(username, week_selected)
+    if df_week.empty:
+        st.warning("לא נמצאו נתונים לשבוע הזה.")
         st.stop()
 
-    df = pd.DataFrame(rows)
-    df["created_at"] = pd.to_datetime(df["created_at"])
+    st.subheader("טבלת שיבוצים מהמערכת")
+    st.dataframe(df_week, use_container_width=True)
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("כמות שיבוצים (שורות)", int(len(df)))
-    col2.metric("מספר שבועות", int(df["week"].nunique()))
-    col3.metric("כמות עובדים שונים", int(df["worker"].nunique()))
+    # תרשים: כמה עבד כל עובד בחלוקה לימים (stacked)
+    st.subheader("כמה עבד כל עובד בחלוקה לימים")
 
-    st.markdown("<div class='card'><b>התפלגות משמרות לפי עובד</b></div>", unsafe_allow_html=True)
-    by_worker = df.groupby("worker").size().sort_values(ascending=False).head(20)
-    st.bar_chart(by_worker)
-
-    st.markdown("<div class='card'><b>התפלגות משמרות לפי יום</b></div>", unsafe_allow_html=True)
-    by_day = df.groupby("day").size().sort_values(ascending=False)
-    st.bar_chart(by_day)
-
-    st.markdown("<div class='card'><b>10 הריצות האחרונות</b></div>", unsafe_allow_html=True)
-    runs = db_fetch_all(
-        """
-        SELECT run_id, week, source_filename, created_at
-        FROM schedule_runs
-        WHERE created_by = %s
-        ORDER BY created_at DESC
-        LIMIT 10
-        """,
-        (st.session_state.username,),
+    # נניח שכל שורה = משמרת אחת
+    chart_df = (
+        df_week.groupby(["עובד", "יום"])
+        .size()
+        .reset_index(name="כמות משמרות")
     )
-    st.dataframe(pd.DataFrame(runs).assign(created_at=lambda x: x["created_at"].astype(str)), use_container_width=True)
 
+    fig = px.bar(
+        chart_df,
+        x="עובד",
+        y="כמות משמרות",
+        color="יום",
+        barmode="stack",
+        title=f"שבוע {week_selected} — כמות משמרות לכל עובד (לפי ימים)"
+    )
+    st.plotly_chart(fig, use_container_width=True)
