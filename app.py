@@ -316,7 +316,90 @@ def simple_assignment(cost_matrix):
         return [], []
     rr, cc = zip(*assignments)
     return list(rr), list(cc)
+# =============================
+# MAX FLOW (בדיקת כיסוי בלבד)
+# =============================
+from collections import defaultdict, deque
 
+class MaxFlow:
+    def __init__(self):
+        self.graph = defaultdict(dict)
+
+    def add_edge(self, u, v, capacity):
+        self.graph[u][v] = capacity
+        self.graph[v][u] = 0
+
+    def bfs(self, s, t, parent):
+        visited = set()
+        queue = deque([s])
+        visited.add(s)
+
+        while queue:
+            u = queue.popleft()
+            for v in self.graph[u]:
+                if v not in visited and self.graph[u][v] > 0:
+                    parent[v] = u
+                    visited.add(v)
+                    queue.append(v)
+                    if v == t:
+                        return True
+        return False
+
+    def max_flow(self, source, sink):
+        parent = {}
+        flow = 0
+
+        while self.bfs(source, sink, parent):
+            path_flow = float('inf')
+            s = sink
+
+            while s != source:
+                path_flow = min(path_flow, self.graph[parent[s]][s])
+                s = parent[s]
+
+            flow += path_flow
+
+            v = sink
+            while v != source:
+                u = parent[v]
+                self.graph[u][v] -= path_flow
+                self.graph[v][u] += path_flow
+                v = parent[v]
+
+        return flow
+
+
+def run_max_flow(workers_df, req_df, pref_df):
+    mf = MaxFlow()
+
+    source = "S"
+    sink = "T"
+
+    workers = workers_df["worker"].tolist()
+
+    shift_slots = []
+    for _, row in req_df.iterrows():
+        for i in range(int(row["required"])):
+            shift_slots.append((row["day"], row["shift"], i))
+
+    pref_dict = {}
+    for _, row in pref_df.iterrows():
+        pref_dict[(row["worker"], row["day"], row["shift"])] = row["preference"]
+
+    max_shifts_per_worker = len(shift_slots) // len(workers) + 1
+
+    for w in workers:
+        mf.add_edge(source, w, max_shifts_per_worker)
+
+    for w in workers:
+        for (d, s, i) in shift_slots:
+            if pref_dict.get((w, d, s), -1) >= 0:
+                mf.add_edge(w, f"{d}_{s}_{i}", 1)
+
+    for (d, s, i) in shift_slots:
+        mf.add_edge(f"{d}_{s}_{i}", sink, 1)
+
+    return mf.max_flow(source, sink), len(shift_slots)
 def build_schedule(workers_df, req_df, pref_df, week_number):
     workers_df.columns = workers_df.columns.str.strip()
     req_df.columns = req_df.columns.str.strip()
@@ -500,7 +583,7 @@ init_pg()
 username = st.session_state.username
 
 st.sidebar.title("תפריט")
-page = st.sidebar.radio("ניווט", ["שיבוץ", "דשבורד", "מערכת מידע"], index=0)
+page = st.sidebar.radio("ניווט", ["שיבוץ", "שיבוץ מקסימלי", "דשבורד", "מערכת מידע"], index=0)
 
 # -----------------------------
 # PAGE: שיבוץ
@@ -566,6 +649,41 @@ if page == "שיבוץ":
             # שמירה ל-DB (דריסה לפי שבוע + לקוח + משתמש)
             upsert_week_schedule(username, customer_name.strip(), int(week_number), schedule_df)
             st.success(f"✅ נשמר למערכת המידע! (לקוח: {customer_name.strip()} | שבוע: {int(week_number)})")
+
+        except Exception as e:
+            st.exception(e)
+
+# -----------------------------
+# PAGE: שיבוץ מקסימלי
+# -----------------------------
+elif page == "שיבוץ מקסימלי":
+    st.title("🔍 בדיקת כיסוי משמרות (Max Flow)")
+
+    uploaded = st.file_uploader("העלה Excel לבדיקה", type=["xlsx"], key="maxflow")
+
+    if uploaded:
+        try:
+            xls = pd.ExcelFile(uploaded)
+            lower_map = {s.lower(): s for s in xls.sheet_names}
+
+            workers_df = pd.read_excel(uploaded, sheet_name=lower_map["workers"])
+            req_df     = pd.read_excel(uploaded, sheet_name=lower_map["requirements"])
+            pref_df    = pd.read_excel(uploaded, sheet_name=lower_map["preferences"])
+
+            workers_df = workers_df.rename(columns={"שם עובד": "worker"})
+            req_df = req_df.rename(columns={"יום": "day", "משמרת": "shift", "כמות נדרשת": "required"})
+            pref_df = pref_df.rename(columns={"עובד": "worker", "יום": "day", "משמרת": "shift", "עדיפות": "preference"})
+
+            if st.button("בדוק כיסוי משמרות"):
+                max_assign, total = run_max_flow(workers_df, req_df, pref_df)
+
+                st.info(f"מקסימום שיבוצים אפשרי: {max_assign}")
+                st.info(f"סה״כ דרישות משמרות: {total}")
+
+                if max_assign == total:
+                    st.success("✅ ניתן לאייש את כל המשמרות")
+                else:
+                    st.warning(f"⚠️ חסרים {total - max_assign} שיבוצים")
 
         except Exception as e:
             st.exception(e)
