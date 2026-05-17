@@ -1,4 +1,11 @@
-import streamlit as stimport pandas as pdimport numpy as npfrom io import BytesIOimport sqlite3, hashlib, os, hmacimport psycopg2import psycopg2.extrasimport plotly.express as px
+import streamlit as st
+import pandas as pd
+import numpy as np
+from io import BytesIO
+import sqlite3, hashlib, os, hmac
+import psycopg2
+import psycopg2.extras
+import plotly.express as px
 
 =============================
 
