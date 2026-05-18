@@ -677,13 +677,13 @@ elif page == "שיבוץ מקסימלי":
             if st.button("בדוק כיסוי משמרות"):
                   max_assign, total = run_max_flow(workers_df, req_df, pref_df)
 
-                  # 👇 תוסיף את זה כאן
-                  st.write("מספר עובדים:", len(workers_df))
+                  num_workers = workers_df["worker"].nunique()
+
+                  st.write("מספר עובדים:", num_workers)
                   st.write("סה״כ דרישות:", total)
 
-                  max_shifts_per_worker = total // len(workers_df) + 1
+                  max_shifts_per_worker = total // num_workers + 1
                   st.write("קיבולת מקסימלית לעובד:", max_shifts_per_worker)
-
                   # 👇 התוצאות הרגילות שלך
                   st.info(f"מקסימום שיבוצים אפשרי: {max_assign}")
                   st.info(f"סה״כ דרישות משמרות: {total}")
