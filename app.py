@@ -370,7 +370,9 @@ class MaxFlow:
 
 def match_managers(workers_df, req_df, pref_df):
     # רק מנהלים
-    managers = workers_df[workers_df["type"] == "manager"]["worker"].tolist()
+    type_col = [c for c in workers_df.columns if "type" in c.lower() or "סוג" in c][0]
+
+    managers = workers_df[workers_df[type_col].str.lower() == "manager"]["worker"].tolist()
 
     # כל המשמרות (בלי כפילויות)
     shifts = req_df[["day", "shift"]].drop_duplicates().values.tolist()
