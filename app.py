@@ -370,7 +370,15 @@ class MaxFlow:
 
 def match_managers(workers_df, req_df, pref_df):
     # רק מנהלים
-    type_col = [c for c in workers_df.columns if "type" in c.lower() or "סוג" in c][0]
+    # ניקוי שמות עמודות
+    workers_df.columns = workers_df.columns.str.strip().str.lower()
+
+    # בדיקה בטוחה
+    if "type" not in workers_df.columns:
+       st.error("❌ חסרה עמודת type בקובץ workers")
+       st.stop()
+
+    type_col = "type"
 
     managers = workers_df[workers_df[type_col].str.lower() == "manager"]["worker"].tolist()
 
