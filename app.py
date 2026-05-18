@@ -675,15 +675,24 @@ elif page == "שיבוץ מקסימלי":
             pref_df = pref_df.rename(columns={"עובד": "worker", "יום": "day", "משמרת": "shift", "עדיפות": "preference"})
 
             if st.button("בדוק כיסוי משמרות"):
-                max_assign, total = run_max_flow(workers_df, req_df, pref_df)
+                  max_assign, total = run_max_flow(workers_df, req_df, pref_df)
 
-                st.info(f"מקסימום שיבוצים אפשרי: {max_assign}")
-                st.info(f"סה״כ דרישות משמרות: {total}")
+                  # 👇 תוסיף את זה כאן
+                  st.write("מספר עובדים:", len(workers_df))
+                  st.write("סה״כ דרישות:", total)
 
-                if max_assign == total:
-                    st.success("✅ ניתן לאייש את כל המשמרות")
-                else:
-                    st.warning(f"⚠️ חסרים {total - max_assign} שיבוצים")
+                  max_shifts_per_worker = total // len(workers_df) + 1
+                  st.write("קיבולת מקסימלית לעובד:", max_shifts_per_worker)
+
+                  # 👇 התוצאות הרגילות שלך
+                  st.info(f"מקסימום שיבוצים אפשרי: {max_assign}")
+                  st.info(f"סה״כ דרישות משמרות: {total}")
+
+                  if max_assign == total:
+                        st.success("✅ ניתן לאייש את כל המשמרות")
+                  else:
+                        st.warning(f"⚠️ חסרים {total - max_assign} שיבוצים")
+
 
         except Exception as e:
             st.exception(e)
