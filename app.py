@@ -857,33 +857,20 @@ elif page == "שיבוץ מנהלים":
             pref_df = pref_df.rename(columns={"עובד": "worker", "יום": "day", "משמרת": "shift", "עדיפות": "preference"})
 
             if st.button("בצע שיבוץ מנהלים"):
-                # שיבוץ עובדים רגיל
-                schedule_df, _ = build_schedule(workers_df, req_df, pref_df, 1)
+                 schedule_df, _ = build_schedule(workers_df, req_df, pref_df, 1)
 
-                schedule_df, _ = build_schedule(workers_df, req_df, pref_df, 1)
+                 managers_df = match_managers(workers_df, req_df, pref_df, schedule_df)
 
-                managers_df = match_managers(workers_df, req_df, pref_df, schedule_df)
+                 final_df = schedule_df.merge(
+                        managers_df,
+                        on=["יום", "משמרת"],
+                        how="left"
+                 )
 
-                final_df = schedule_df.merge(
-                  managers_df,
-                  on=["יום", "משמרת"],
-                  how="left"
-                )
+                 final_df["האם מנהל"] = final_df["עובד"] == final_df["מנהל"]
 
-                st.dataframe(final_df, use_container_width=True)
-
-                # מיזוג
-                final_df = schedule_df.merge(
-                    managers_df,
-                    on=["יום", "משמרת"],
-                    how="left"
-                )
-
-                # סימון מי מנהל
-                final_df["האם מנהל"] = final_df["עובד"] == final_df["מנהל"]
-
-                st.success("✅ שיבוץ מנהלים מוכן")
-                st.dataframe(result, use_container_width=True)
+                 st.success("✅ שיבוץ מנהלים מוכן")
+                 st.dataframe(final_df, use_container_width=True)
 
                 # בדיקה
                 missing = result[result["מנהל"] == "❌ אין מנהל"]
