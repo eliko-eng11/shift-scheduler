@@ -866,7 +866,30 @@ elif page == "שיבוץ מנהלים":
                         on=["יום", "משמרת"],
                         how="left"
                  )
+                 def fix_managers_logic(final_df, workers_df):
 
+                        managers = workers_df[workers_df["type"] == "manager"]["worker"].tolist()
+
+                        for idx, row in final_df.iterrows():
+                                worker = row["עובד"]
+                                manager = row["מנהל"]
+
+                                # ❌ אותו אדם לא יכול להיות גם עובד וגם מנהל
+                                if worker == manager:
+                                        final_df.at[idx, "עובד"] = None
+
+                                # ❗ אם העובד הוא מנהל
+                                elif worker in managers:
+
+                                    # אם אין מנהל במשמרת → לא ניתן לו להיות עובד
+                                    if manager == "❌ אין מנהל":
+                                            final_df.at[idx, "עובד"] = None
+
+                                    # אם יש מנהל אחר → מותר
+                                    else:
+                                            continue
+        
+                          return final_df
                  final_df["האם מנהל"] = final_df["עובד"] == final_df["מנהל"]
 
                  st.success("✅ שיבוץ מנהלים מוכן")
