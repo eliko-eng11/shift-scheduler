@@ -687,6 +687,8 @@ elif page == "שיבוץ מקסימלי":
                   # 👇 התוצאות הרגילות שלך
                   st.info(f"מקסימום שיבוצים אפשרי: {max_assign}")
                   st.info(f"סה״כ דרישות משמרות: {total}")
+                  st.write("עמודות אחרי ניקוי:", req_df.columns)
+                  st.write("סכום דרישות:", req_df["required"].sum())
 
                   if max_assign == total:
                         st.success("✅ ניתן לאייש את כל המשמרות")
