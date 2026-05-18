@@ -386,7 +386,7 @@ def run_max_flow(workers_df, req_df, pref_df):
     for _, row in pref_df.iterrows():
         pref_dict[(row["worker"], row["day"], row["shift"])] = row["preference"]
 
-    max_shifts_per_worker = len(shift_slots) // len(workers) + 1
+    max_shifts_per_worker = len(shift_slots)
 
     for w in workers:
         mf.add_edge(source, w, max_shifts_per_worker)
