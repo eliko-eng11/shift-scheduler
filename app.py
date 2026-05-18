@@ -398,7 +398,8 @@ def run_max_flow(workers_df, req_df, pref_df):
 
     for (d, s, i) in shift_slots:
         mf.add_edge(f"{d}_{s}_{i}", sink, 1)
-
+    st.write(req_df)
+    st.write("סכום אמיתי:", req_df["required"].sum())
     return mf.max_flow(source, sink), len(shift_slots)
 def build_schedule(workers_df, req_df, pref_df, week_number):
     workers_df.columns = workers_df.columns.str.strip()
