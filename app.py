@@ -889,7 +889,7 @@ elif page == "שיבוץ מנהלים":
                                     else:
                                             continue
         
-                          return final_df
+                           return final_df
                  final_df = fix_managers_logic(final_df, workers_df)   
                  final_df["האם מנהל"] = final_df["עובד"] == final_df["מנהל"]
                  st.success("✅ שיבוץ מנהלים מוכן")
