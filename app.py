@@ -806,6 +806,24 @@ elif page == "שיבוץ מנהלים":
             pref_df = pref_df.rename(columns={"עובד": "worker", "יום": "day", "משמרת": "shift", "עדיפות": "preference"})
 
             if st.button("בצע שיבוץ מנהלים"):
+                # שיבוץ עובדים רגיל
+                schedule_df, _ = build_schedule(workers_df, req_df, pref_df, 1)
+
+                # שיבוץ מנהלים
+                managers_df = match_managers(workers_df, req_df, pref_df)
+
+                # מיזוג
+                final_df = schedule_df.merge(
+                    managers_df,
+                    on=["יום", "משמרת"],
+                    how="left"
+                )
+
+                # סימון מי מנהל
+                final_df["האם מנהל"] = final_df["עובד"] == final_df["מנהל"]
+
+                # הצגה
+                st.dataframe(final_df, use_container_width=True)
                 result = match_managers(workers_df, req_df, pref_df)
 
                 st.success("✅ שיבוץ מנהלים מוכן")
