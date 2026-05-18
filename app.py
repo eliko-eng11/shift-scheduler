@@ -368,7 +368,7 @@ class MaxFlow:
 
         return flow
 
-def match_managers(workers_df, req_df, pref_df):
+def match_managers(workers_df, req_df, pref_df, schedule_df):
     # רק מנהלים
     # ניקוי שמות עמודות
     workers_df.columns = workers_df.columns.str.strip().str.lower()
@@ -884,7 +884,7 @@ elif page == "שיבוץ מנהלים":
 
                 # הצגה
                 st.dataframe(final_df, use_container_width=True)
-                result = match_managers(workers_df, req_df, pref_df)
+                result =match_managers(workers_df, req_df, pref_df, schedule_df)
 
                 st.success("✅ שיבוץ מנהלים מוכן")
                 st.dataframe(result, use_container_width=True)
