@@ -684,9 +684,43 @@ elif page == "שיבוץ מקסימלי":
 
                   st.write("מספר עובדים:", num_workers)
                   st.write("סה״כ דרישות:", total)
+                  # בניית טבלת השוואה
+                  coverage = []
+
+                  for _, row in req_df.iterrows():
+                      day = row["day"]
+                      shift = row["shift"]
+                      required = int(row["required"])
+
+                      assigned = 0
+                      for w in workers_df["worker"].unique():
+                          if pref_df[(pref_df["worker"] == w) & 
+                                (pref_df["day"] == day) & 
+                                (pref_df["shift"] == shift) & 
+                                (pref_df["preference"] >= 0)].shape[0] > 0:
+                              assigned += 1
+
+                      coverage.append({
+                      "יום": day,
+                      "משמרת": shift,
+                      "נדרש": required,
+                      "אפשרי": assigned
+                      })
+
+                  coverage_df = pd.DataFrame(coverage)
+
+                  fig = px.bar(
+                      coverage_df,
+                      x="יום",
+                      y=["נדרש", "אפשרי"],
+                      barmode="group",
+                      color_discrete_map={"נדרש": "red", "אפשרי": "green"},
+                      title="השוואה בין דרישות לבין כיסוי בפועל"
+                  )
+
+                  st.plotly_chart(fig, use_container_width=True)
 
                   max_shifts_per_worker = total // num_workers + 1
-                  st.write("קיבולת מקסימלית לעובד:", max_shifts_per_worker)
                   # 👇 התוצאות הרגילות שלך
                   st.info(f"מקסימום שיבוצים אפשרי: {max_assign}")
                   st.info(f"סה״כ דרישות משמרות: {total}")
