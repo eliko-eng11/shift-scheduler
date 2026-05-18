@@ -873,13 +873,12 @@ elif page == "שיבוץ מנהלים":
                  st.dataframe(final_df, use_container_width=True)
 
                 # בדיקה
-                missing = result[result["מנהל"] == "❌ אין מנהל"]
+                 missing = final_df[final_df["מנהל"] == "❌ אין מנהל"]
 
-                if not missing.empty:
-                    st.warning(f"⚠️ חסרים מנהלים ב־{len(missing)} משמרות")
-                else:
-                    st.success("🔥 כל המשמרות מאוישות עם מנהל")
-
+                 if not missing.empty:
+                        st.warning(f"⚠️ חסרים מנהלים ב־{len(missing)} משמרות")
+                 else:
+                        st.success("🔥 כל המשמרות מאוישות עם מנהל")
         except Exception as e:
             st.exception(e)
 # -----------------------------
