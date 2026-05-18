@@ -394,7 +394,9 @@ def run_max_flow(workers_df, req_df, pref_df):
     for w in workers:
         for (d, s, i) in shift_slots:
             if pref_dict.get((w, d, s), -1) >= 0:
-                mf.add_edge(w, f"{d}_{s}_{i}", 1)
+                worker_shift_node = f"{w}_{d}_{s}"
+                mf.add_edge(w, worker_shift_node, 1)
+                mf.add_edge(worker_shift_node, f"{d}_{s}_{i}", 1)
 
     for (d, s, i) in shift_slots:
         mf.add_edge(f"{d}_{s}_{i}", sink, 1)
