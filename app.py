@@ -882,10 +882,6 @@ elif page == "שיבוץ מנהלים":
                 # סימון מי מנהל
                 final_df["האם מנהל"] = final_df["עובד"] == final_df["מנהל"]
 
-                # הצגה
-                st.dataframe(final_df, use_container_width=True)
-                result =match_managers(workers_df, req_df, pref_df, schedule_df)
-
                 st.success("✅ שיבוץ מנהלים מוכן")
                 st.dataframe(result, use_container_width=True)
 
