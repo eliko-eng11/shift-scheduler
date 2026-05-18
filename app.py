@@ -612,7 +612,58 @@ def build_schedule(workers_df, req_df, pref_df, week_number):
     df = df.sort_values(by=["שבוע", "יום_מספר", "משמרת", "עובד"])
     df = df[["שבוע", "יום", "משמרת", "עובד"]]
     return df, unassigned_pairs
+def match_managers(workers_df, req_df, pref_df, schedule_df):
+    # ניקוי עמודות
+    workers_df.columns = workers_df.columns.str.strip().str.lower()
+    pref_df.columns = pref_df.columns.str.strip().str.lower()
+    req_df.columns = req_df.columns.str.strip().str.lower()
 
+    # מציאת מנהלים
+    type_col = [c for c in workers_df.columns if "type" in c][0]
+    managers = workers_df[workers_df[type_col] == "manager"]["worker"].tolist()
+
+    # כל המשמרות
+    shifts = req_df[["day", "shift"]].drop_duplicates().values.tolist()
+
+    # העדפות
+    pref_dict = {
+        (row["worker"], row["day"], row["shift"]): row["preference"]
+        for _, row in pref_df.iterrows()
+    }
+
+    assignments = []
+
+    for day, shift in shifts:
+        assigned = False
+
+        # עובדים שכבר שובצו במשמרת
+        workers_in_shift = schedule_df[
+            (schedule_df["יום"] == day) &
+            (schedule_df["משמרת"] == shift)
+        ]["עובד"].tolist()
+
+        for m in managers:
+            # ❗ לא להיות עובד באותה משמרת
+            if m in workers_in_shift:
+                continue
+
+            if pref_dict.get((m, day, shift), -1) >= 0:
+                assignments.append({
+                    "יום": day,
+                    "משמרת": shift,
+                    "מנהל": m
+                })
+                assigned = True
+                break
+
+        if not assigned:
+            assignments.append({
+                "יום": day,
+                "משמרת": shift,
+                "מנהל": "❌ אין מנהל"
+            })
+
+    return pd.DataFrame(assignments)
 # =============================
 # Excel helpers
 # =============================
@@ -809,8 +860,17 @@ elif page == "שיבוץ מנהלים":
                 # שיבוץ עובדים רגיל
                 schedule_df, _ = build_schedule(workers_df, req_df, pref_df, 1)
 
-                # שיבוץ מנהלים
-                managers_df = match_managers(workers_df, req_df, pref_df)
+                schedule_df, _ = build_schedule(workers_df, req_df, pref_df, 1)
+
+                managers_df = match_managers(workers_df, req_df, pref_df, schedule_df)
+
+                final_df = schedule_df.merge(
+                  managers_df,
+                  on=["יום", "משמרת"],
+                  how="left"
+                )
+
+                st.dataframe(final_df, use_container_width=True)
 
                 # מיזוג
                 final_df = schedule_df.merge(
