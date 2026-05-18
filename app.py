@@ -368,7 +368,46 @@ class MaxFlow:
 
         return flow
 
+def match_managers(workers_df, req_df, pref_df):
+    # רק מנהלים
+    managers = workers_df[workers_df["type"] == "manager"]["worker"].tolist()
 
+    # כל המשמרות (בלי כפילויות)
+    shifts = req_df[["day", "shift"]].drop_duplicates().values.tolist()
+
+    pref_dict = {
+        (row["worker"], row["day"], row["shift"]): row["preference"]
+        for _, row in pref_df.iterrows()
+    }
+
+    assignments = []
+    used_managers = set()
+
+    for day, shift in shifts:
+        assigned = False
+
+        for m in managers:
+            if m in used_managers:
+                continue
+
+            if pref_dict.get((m, day, shift), -1) >= 0:
+                assignments.append({
+                    "יום": day,
+                    "משמרת": shift,
+                    "מנהל": m
+                })
+                used_managers.add(m)
+                assigned = True
+                break
+
+        if not assigned:
+            assignments.append({
+                "יום": day,
+                "משמרת": shift,
+                "מנהל": "❌ אין מנהל"
+            })
+
+    return pd.DataFrame(assignments)
 def run_max_flow(workers_df, req_df, pref_df):
     mf = MaxFlow()
 
@@ -586,7 +625,11 @@ init_pg()
 username = st.session_state.username
 
 st.sidebar.title("תפריט")
-page = st.sidebar.radio("ניווט", ["שיבוץ", "שיבוץ מקסימלי", "דשבורד", "מערכת מידע"], index=0)
+page = st.sidebar.radio(
+    "ניווט",
+    ["שיבוץ", "שיבוץ מקסימלי", "שיבוץ מנהלים", "דשבורד", "מערכת מידע"],
+    index=0
+)
 
 # -----------------------------
 # PAGE: שיבוץ
@@ -733,7 +776,41 @@ elif page == "שיבוץ מקסימלי":
 
         except Exception as e:
             st.exception(e)
+elif page == "שיבוץ מנהלים":
+    st.title("👨‍💼 שיבוץ מנהלים (Matching)")
 
+    uploaded = st.file_uploader("העלה Excel", type=["xlsx"], key="managers")
+
+    if uploaded:
+        try:
+            xls = pd.ExcelFile(uploaded)
+            lower_map = {s.lower(): s for s in xls.sheet_names}
+
+            workers_df = pd.read_excel(uploaded, sheet_name=lower_map["workers"])
+            req_df     = pd.read_excel(uploaded, sheet_name=lower_map["requirements"])
+            pref_df    = pd.read_excel(uploaded, sheet_name=lower_map["preferences"])
+
+            # ניקוי
+            workers_df = workers_df.rename(columns={"שם עובד": "worker"})
+            req_df = req_df.rename(columns={"יום": "day", "משמרת": "shift", "כמות נדרשת": "required"})
+            pref_df = pref_df.rename(columns={"עובד": "worker", "יום": "day", "משמרת": "shift", "עדיפות": "preference"})
+
+            if st.button("בצע שיבוץ מנהלים"):
+                result = match_managers(workers_df, req_df, pref_df)
+
+                st.success("✅ שיבוץ מנהלים מוכן")
+                st.dataframe(result, use_container_width=True)
+
+                # בדיקה
+                missing = result[result["מנהל"] == "❌ אין מנהל"]
+
+                if not missing.empty:
+                    st.warning(f"⚠️ חסרים מנהלים ב־{len(missing)} משמרות")
+                else:
+                    st.success("🔥 כל המשמרות מאוישות עם מנהל")
+
+        except Exception as e:
+            st.exception(e)
 # -----------------------------
 # PAGE: דשבורד
 # -----------------------------
